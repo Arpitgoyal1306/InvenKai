@@ -1,4 +1,5 @@
 const express = require("express");
+const pool = require("./config/database");
 
 const app = express();
 
@@ -10,10 +11,20 @@ app.get("/", (req, res) => {
   });
 });
 
-app.get("/health", (req, res) => {
-  res.json({
-    status: "ok",
-  });
+app.get("/health", async (req, res) => {
+  try {
+    await pool.query("SELECT 1");
+
+    res.json({
+      status: "ok",
+      database: "connected",
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: "error",
+      database: "disconnected",
+    });
+  }
 });
 
 app.use((req, res) => {
