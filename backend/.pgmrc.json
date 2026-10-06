@@ -1,0 +1,6 @@
+{
+  "database-url-var": "DATABASE_URL",
+  "dir": "migrations",
+  "migrations-table": "pgmigrations",
+  "check-order": true
+}
