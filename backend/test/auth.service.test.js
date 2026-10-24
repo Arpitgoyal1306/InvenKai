@@ -3,7 +3,10 @@ const assert = require("node:assert/strict");
 
 const pool = require("../src/config/database");
 const bcrypt = require("bcrypt");
-const { registerUser } = require("../src/services/auth.service");
+const jwt = require("jsonwebtoken");
+const { registerUser, loginUser } = require("../src/services/auth.service");
+
+// Registration tests
 
 test("registerUser creates a user with a hashed password", async (t) => {
   const query = mock.method(pool, "query", async (_sql, params) => ({
@@ -79,4 +82,90 @@ test("registerUser reports duplicate emails", async (t) => {
   );
 
   assert.equal(query.mock.callCount(), 1);
+});
+
+// Login tests
+
+test("loginUser returns a JWT and safe user details for valid credentials", async (t) => {
+  const passwordHash = await bcrypt.hash("password123", 4);
+
+  mock.method(pool, "query", async () => ({
+    rows: [
+      {
+        id: "42",
+        name: "Test User",
+        email: "test@example.com",
+        password_hash: passwordHash,
+        role: "customer",
+      },
+    ],
+  }));
+
+  t.after(() => mock.restoreAll());
+
+  const result = await loginUser({
+    email: " TEST@EXAMPLE.COM ",
+    password: "password123",
+  });
+
+  assert.equal(typeof result.token, "string");
+  assert.equal(result.user.id, "42");
+  assert.equal(result.user.email, "test@example.com");
+  assert.equal(result.user.name, "Test User");
+  assert.equal(result.user.role, "customer");
+  assert.equal("password_hash" in result.user, false);
+
+  const decoded = jwt.verify(result.token, process.env.JWT_SECRET);
+  assert.equal(decoded.sub, "42");
+  assert.equal(decoded.role, "customer");
+});
+
+test("loginUser rejects an incorrect password", async (t) => {
+  const passwordHash = await bcrypt.hash("correctPassword", 4);
+
+  mock.method(pool, "query", async () => ({
+    rows: [
+      {
+        id: "42",
+        name: "Test User",
+        email: "test@example.com",
+        password_hash: passwordHash,
+        role: "customer",
+      },
+    ],
+  }));
+
+  t.after(() => mock.restoreAll());
+
+  await assert.rejects(
+    loginUser({
+      email: "test@example.com",
+      password: "wrongPassword",
+    }),
+    { statusCode: 401, message: "Invalid email or password" },
+  );
+});
+
+test("loginUser rejects an unknown email", async (t) => {
+  mock.method(pool, "query", async () => ({ rows: [] }));
+
+  t.after(() => mock.restoreAll());
+
+  await assert.rejects(
+    loginUser({
+      email: "unknown@example.com",
+      password: "password123",
+    }),
+    { statusCode: 401, message: "Invalid email or password" },
+  );
+});
+
+test("loginUser rejects invalid input", async () => {
+  await assert.rejects(
+    loginUser({
+      email: "not-an-email",
+      password: "password123",
+    }),
+    { statusCode: 400 },
+  );
 });
