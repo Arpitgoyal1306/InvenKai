@@ -1,3 +1,4 @@
+const jwt = require("jsonwebtoken");
 const pool = require("../config/database");
 const bcrypt = require("bcrypt");
 
@@ -40,4 +41,57 @@ async function registerUser({ name, email, password }) {
   }
 }
 
-module.exports = { registerUser };
+async function loginUser({ email, password }) {
+  if (
+    typeof email !== "string" ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ||
+    typeof password !== "string" ||
+    !password
+  ) {
+    const error = new Error("Valid email and password are required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+
+  const result = await pool.query(
+    `SELECT id, name, email, password_hash, role
+     FROM users
+     WHERE email = $1`,
+    [normalizedEmail],
+  );
+
+  const user = result.rows[0];
+
+  if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+    const error = new Error("Invalid email or password");
+    error.statusCode = 401;
+    throw error;
+  }
+
+  if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET is not configured");
+  }
+
+  const token = jwt.sign(
+    {
+      sub: String(user.id),
+      role: user.role,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "1h" },
+  );
+
+  return {
+    token,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+    },
+  };
+}
+
+module.exports = { registerUser, loginUser };
