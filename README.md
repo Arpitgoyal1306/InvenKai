@@ -48,6 +48,9 @@ source of truth   cache +    async order
 
 ## 🚀 Getting Started
 
+New contributors should start with the **[Developer Onboarding Guide](DEVELOPER_ONBOARDING.md)**. It covers the verified backend structure, local setup, individual Neon database branches, migrations, commands, issue workflow, and pull request expectations.
+
+
 ```bash
 git clone https://github.com/<your-username>/invenkai.git
 cd invenkai
