@@ -14,7 +14,9 @@ app.get("/", (req, res) => {
     message: "InvenKai API is running",
   });
 });
-
+app.get("/history" , (req,res)=>{
+  res.json({message: "Hello this is the point of history."})
+})
 app.get("/health", async (req, res) => {
   try {
     await pool.query("SELECT 1");
