@@ -4,6 +4,7 @@ const authorizeRoles = require("../middleware/authorize-roles");
 const {
   getInventoryByProductId,
   decreaseStock,
+  increaseStock,
 } = require("../services/inventory.service");
 
 const router = express.Router();
@@ -76,6 +77,54 @@ router.patch(
 
       return res.status(500).json({
         message: "Failed to decrease stock",
+      });
+    }
+  },
+);
+
+// Increase stock.
+// Only inventory managers and admins can perform this action.
+router.patch(
+  "/:productId/increase",
+  authenticateToken,
+  authorizeRoles("inventory_manager", "admin"),
+  async (req, res) => {
+    const productId = Number(req.params.productId);
+    const { quantity } = req.body;
+
+    if (!Number.isSafeInteger(productId) || productId <= 0) {
+      return res.status(400).json({
+        message: "Product ID must be a positive integer",
+      });
+    }
+
+    if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+      return res.status(400).json({
+        message: "Quantity must be a positive integer",
+      });
+    }
+
+    try {
+      const inventory = await increaseStock(productId, quantity);
+
+      return res.status(200).json({
+        message: "Stock increased successfully",
+        inventory,
+      });
+    } catch (error) {
+      if (error.message === "Product inventory not found") {
+        return res.status(404).json({
+          message: error.message,
+        });
+      }
+      if (error.message === "Stock quantity limit exceeded") {
+        return res.status(409).json({
+          message: error.message,
+        });
+      }
+
+      return res.status(500).json({
+        message: "Failed to increase stock",
       });
     }
   },
