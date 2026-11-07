@@ -1,4 +1,3 @@
-
 const pool = require("../config/database");
 
 const MAX_STOCK = 2147483647;
@@ -21,8 +20,8 @@ async function getInventoryByProductId(productId) {
 }
 
 // Get products whose current stock is at or below their threshold.
-async function getLowStockProducts() {
-  const result = await pool.query(
+async function getLowStockProducts(db = pool) {
+  const result = await db.query(
     `SELECT
        p.id AS product_id,
        p.name,

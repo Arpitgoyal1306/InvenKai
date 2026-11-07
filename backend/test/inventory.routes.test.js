@@ -1,4 +1,3 @@
-
 const { test, mock } = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
@@ -589,10 +588,7 @@ test("GET low-stock products handles database errors", async () => {
       .set("Authorization", `Bearer ${token}`);
 
     assert.equal(response.status, 500);
-    assert.equal(
-      response.body.message,
-      "Failed to fetch low-stock products",
-    );
+    assert.equal(response.body.message, "Failed to fetch low-stock products");
   } finally {
     queryMock.mock.restore();
   }

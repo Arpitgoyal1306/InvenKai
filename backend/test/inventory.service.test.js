@@ -1,4 +1,3 @@
-
 const { test, mock } = require("node:test");
 const assert = require("node:assert/strict");
 
@@ -84,10 +83,7 @@ test("getLowStockProducts returns products at or below their threshold", async (
 
     assert.deepEqual(products, rows);
 
-    assert.match(
-      queryMock.mock.calls[0].arguments[0],
-      /INNER JOIN inventory/i,
-    );
+    assert.match(queryMock.mock.calls[0].arguments[0], /INNER JOIN inventory/i);
 
     assert.match(
       queryMock.mock.calls[0].arguments[0],
@@ -155,10 +151,7 @@ test("getLowStockProducts propagates database errors", async () => {
   });
 
   try {
-    await assert.rejects(
-      getLowStockProducts(),
-      /Database connection failed/,
-    );
+    await assert.rejects(getLowStockProducts(), /Database connection failed/);
   } finally {
     queryMock.mock.restore();
   }
