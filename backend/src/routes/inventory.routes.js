@@ -12,7 +12,6 @@ const {
 const router = express.Router();
 
 // Get inventory transaction history.
-// Any authenticated user can view history.
 router.get("/history", authenticateToken, async (req, res) => {
   try {
     const productId =
@@ -21,7 +20,6 @@ router.get("/history", authenticateToken, async (req, res) => {
         : Number(req.query.productId);
 
     const limit = req.query.limit === undefined ? 20 : Number(req.query.limit);
-
     const offset =
       req.query.offset === undefined ? 0 : Number(req.query.offset);
 
@@ -59,7 +57,6 @@ router.get("/history", authenticateToken, async (req, res) => {
 });
 
 // Get inventory for a product.
-// Any authenticated user can view inventory.
 router.get("/:productId", authenticateToken, async (req, res) => {
   const productId = Number(req.params.productId);
 
@@ -87,7 +84,6 @@ router.get("/:productId", authenticateToken, async (req, res) => {
 });
 
 // Decrease stock.
-// Only inventory managers and admins can perform this action.
 router.patch(
   "/:productId/decrease",
   authenticateToken,
@@ -128,7 +124,6 @@ router.patch(
 );
 
 // Increase stock.
-// Only inventory managers and admins can perform this action.
 router.patch(
   "/:productId/increase",
   authenticateToken,
@@ -137,6 +132,14 @@ router.patch(
     const productId = Number(req.params.productId);
     const { quantity } = req.body;
 
+    // Validate product ID.
+    if (!Number.isSafeInteger(productId) || productId <= 0) {
+      return res.status(400).json({
+        message: "Product ID must be a positive integer",
+      });
+    }
+
+    // Validate quantity.
     if (
       !Number.isSafeInteger(quantity) ||
       quantity <= 0 ||
@@ -144,12 +147,6 @@ router.patch(
     ) {
       return res.status(400).json({
         message: "Quantity must be a positive integer within the allowed limit",
-      });
-    }
-
-    if (!Number.isSafeInteger(quantity) || quantity <= 0) {
-      return res.status(400).json({
-        message: "Quantity must be a positive integer",
       });
     }
 
