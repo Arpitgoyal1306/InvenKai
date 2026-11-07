@@ -1,9 +1,11 @@
+
 const express = require("express");
 const authenticateToken = require("../middleware/auth.middleware");
 const authorizeRoles = require("../middleware/authorize-roles");
 
 const {
   getInventoryByProductId,
+  getLowStockProducts,
   decreaseStock,
   increaseStock,
   getInventoryTransactions,
@@ -55,6 +57,29 @@ router.get("/history", authenticateToken, async (req, res) => {
     });
   }
 });
+
+// Get products with low stock.
+router.get(
+  "/low-stock",
+  authenticateToken,
+  authorizeRoles("inventory_manager", "admin"),
+  async (req, res) => {
+    try {
+      const products = await getLowStockProducts();
+
+      return res.status(200).json({
+        count: products.length,
+        products,
+      });
+    } catch (error) {
+      console.error("Failed to fetch low-stock products:", error);
+
+      return res.status(500).json({
+        message: "Failed to fetch low-stock products",
+      });
+    }
+  },
+);
 
 // Get inventory for a product.
 router.get("/:productId", authenticateToken, async (req, res) => {
@@ -132,14 +157,12 @@ router.patch(
     const productId = Number(req.params.productId);
     const { quantity } = req.body;
 
-    // Validate product ID.
     if (!Number.isSafeInteger(productId) || productId <= 0) {
       return res.status(400).json({
         message: "Product ID must be a positive integer",
       });
     }
 
-    // Validate quantity.
     if (
       !Number.isSafeInteger(quantity) ||
       quantity <= 0 ||

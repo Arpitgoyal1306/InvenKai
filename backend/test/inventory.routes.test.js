@@ -1,3 +1,4 @@
+
 const { test, mock } = require("node:test");
 const assert = require("node:assert/strict");
 const request = require("supertest");
@@ -430,7 +431,7 @@ test("GET inventory history handles database errors", async () => {
   const token = createToken("inventory_manager");
 
   const queryMock = mock.method(pool, "query", async () => {
-    throw new Error("Dadtabase connection failed");
+    throw new Error("Database connection failed");
   });
 
   try {
@@ -465,4 +466,134 @@ test("PATCH decrease stock rejects quantity above PostgreSQL INTEGER limit", asy
     .send({ quantity: 2147483648 });
 
   assert.equal(response.status, 400);
+});
+
+// ---------------- LOW-STOCK PRODUCTS ----------------
+
+test("GET low-stock products rejects requests without a token", async () => {
+  const response = await request(app).get("/api/inventory/low-stock");
+
+  assert.equal(response.status, 401);
+});
+
+test("GET low-stock products rejects customers", async () => {
+  const token = createToken("customer");
+
+  const response = await request(app)
+    .get("/api/inventory/low-stock")
+    .set("Authorization", `Bearer ${token}`);
+
+  assert.equal(response.status, 403);
+});
+
+test("GET low-stock products returns products for inventory manager", async () => {
+  const token = createToken("inventory_manager");
+
+  const products = [
+    {
+      product_id: "1",
+      name: "Keyboard",
+      sku: "KEY-001",
+      category_id: "1",
+      quantity: 2,
+      low_stock_threshold: 5,
+    },
+    {
+      product_id: "2",
+      name: "Mouse",
+      sku: "MOU-001",
+      category_id: "1",
+      quantity: 5,
+      low_stock_threshold: 5,
+    },
+  ];
+
+  const queryMock = mock.method(pool, "query", async () => ({
+    rows: products,
+  }));
+
+  try {
+    const response = await request(app)
+      .get("/api/inventory/low-stock")
+      .set("Authorization", `Bearer ${token}`);
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.count, 2);
+    assert.deepEqual(response.body.products, products);
+  } finally {
+    queryMock.mock.restore();
+  }
+});
+
+test("GET low-stock products returns products for admin", async () => {
+  const token = createToken("admin");
+
+  const products = [
+    {
+      product_id: "3",
+      name: "Cable",
+      sku: "CAB-001",
+      category_id: "1",
+      quantity: 0,
+      low_stock_threshold: 0,
+    },
+  ];
+
+  const queryMock = mock.method(pool, "query", async () => ({
+    rows: products,
+  }));
+
+  try {
+    const response = await request(app)
+      .get("/api/inventory/low-stock")
+      .set("Authorization", `Bearer ${token}`);
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.count, 1);
+    assert.deepEqual(response.body.products, products);
+  } finally {
+    queryMock.mock.restore();
+  }
+});
+
+test("GET low-stock products returns an empty list when no products match", async () => {
+  const token = createToken("inventory_manager");
+
+  const queryMock = mock.method(pool, "query", async () => ({
+    rows: [],
+  }));
+
+  try {
+    const response = await request(app)
+      .get("/api/inventory/low-stock")
+      .set("Authorization", `Bearer ${token}`);
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.count, 0);
+    assert.deepEqual(response.body.products, []);
+  } finally {
+    queryMock.mock.restore();
+  }
+});
+
+test("GET low-stock products handles database errors", async () => {
+  const token = createToken("inventory_manager");
+
+  const queryMock = mock.method(pool, "query", async () => {
+    throw new Error("Database connection failed");
+  });
+
+  try {
+    const response = await request(app)
+      .get("/api/inventory/low-stock")
+      .set("Authorization", `Bearer ${token}`);
+
+    assert.equal(response.status, 500);
+    assert.equal(
+      response.body.message,
+      "Failed to fetch low-stock products",
+    );
+  } finally {
+    queryMock.mock.restore();
+  }
 });
