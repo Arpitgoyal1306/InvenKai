@@ -19,6 +19,26 @@ async function getInventoryByProductId(productId) {
   return result.rows[0] ?? null;
 }
 
+// Get products whose current stock is at or below their threshold.
+async function getLowStockProducts(db = pool) {
+  const result = await db.query(
+    `SELECT
+       p.id AS product_id,
+       p.name,
+       p.sku,
+       p.category_id,
+       i.quantity,
+       p.low_stock_threshold
+     FROM products p
+     INNER JOIN inventory i ON i.product_id = p.id
+     WHERE p.low_stock_threshold IS NOT NULL
+       AND i.quantity <= p.low_stock_threshold
+     ORDER BY i.quantity ASC, p.name ASC`,
+  );
+
+  return result.rows;
+}
+
 async function changeStock(productId, quantity, userId, transactionType) {
   if (
     !Number.isSafeInteger(productId) ||
@@ -167,6 +187,7 @@ async function getInventoryTransactions({ productId, limit = 20, offset = 0 }) {
 
 module.exports = {
   getInventoryByProductId,
+  getLowStockProducts,
   decreaseStock,
   increaseStock,
   getInventoryTransactions,

@@ -5,6 +5,7 @@ const pool = require("../src/config/database");
 
 const {
   getInventoryByProductId,
+  getLowStockProducts,
   decreaseStock,
   increaseStock,
   getInventoryTransactions,
@@ -48,6 +49,109 @@ test("getInventoryByProductId returns null when not found", async () => {
 
   try {
     assert.equal(await getInventoryByProductId(999), null);
+  } finally {
+    queryMock.mock.restore();
+  }
+});
+
+// Low-stock tests.
+
+test("getLowStockProducts returns products at or below their threshold", async () => {
+  const rows = [
+    {
+      product_id: 1,
+      name: "Keyboard",
+      sku: "KEY-001",
+      category_id: 1,
+      quantity: 2,
+      low_stock_threshold: 5,
+    },
+    {
+      product_id: 2,
+      name: "Mouse",
+      sku: "MOU-001",
+      category_id: 1,
+      quantity: 5,
+      low_stock_threshold: 5,
+    },
+  ];
+
+  const queryMock = mock.method(pool, "query", async () => ({ rows }));
+
+  try {
+    const products = await getLowStockProducts();
+
+    assert.deepEqual(products, rows);
+
+    assert.match(queryMock.mock.calls[0].arguments[0], /INNER JOIN inventory/i);
+
+    assert.match(
+      queryMock.mock.calls[0].arguments[0],
+      /low_stock_threshold IS NOT NULL/i,
+    );
+
+    assert.match(
+      queryMock.mock.calls[0].arguments[0],
+      /quantity <= p\.low_stock_threshold/i,
+    );
+
+    assert.match(
+      queryMock.mock.calls[0].arguments[0],
+      /ORDER BY i\.quantity ASC/i,
+    );
+
+    assert.equal(queryMock.mock.calls[0].arguments.length, 1);
+  } finally {
+    queryMock.mock.restore();
+  }
+});
+
+test("getLowStockProducts returns an empty array when no products are low on stock", async () => {
+  const queryMock = mock.method(pool, "query", async () => ({
+    rows: [],
+  }));
+
+  try {
+    const products = await getLowStockProducts();
+
+    assert.deepEqual(products, []);
+  } finally {
+    queryMock.mock.restore();
+  }
+});
+
+test("getLowStockProducts includes products with zero threshold when quantity is zero", async () => {
+  const rows = [
+    {
+      product_id: 3,
+      name: "Cable",
+      sku: "CAB-001",
+      category_id: 1,
+      quantity: 0,
+      low_stock_threshold: 0,
+    },
+  ];
+
+  const queryMock = mock.method(pool, "query", async () => ({ rows }));
+
+  try {
+    const products = await getLowStockProducts();
+
+    assert.deepEqual(products, rows);
+    assert.equal(products[0].quantity, 0);
+    assert.equal(products[0].low_stock_threshold, 0);
+  } finally {
+    queryMock.mock.restore();
+  }
+});
+
+test("getLowStockProducts propagates database errors", async () => {
+  const queryMock = mock.method(pool, "query", async () => {
+    throw new Error("Database connection failed");
+  });
+
+  try {
+    await assert.rejects(getLowStockProducts(), /Database connection failed/);
   } finally {
     queryMock.mock.restore();
   }
