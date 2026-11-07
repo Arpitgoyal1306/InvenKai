@@ -268,24 +268,29 @@ test("PATCH suppliers updates a supplier for inventory manager", async () => {
 
   let queryCount = 0;
 
-  const queryMock = mock.method(pool, "query", async (sql) => {
-    queryCount++;
+  const client = {
+    query: async (sql) => {
+      queryCount++;
 
-    if (/SELECT/i.test(sql)) {
-      return {
-        rows: [{
-          ...updatedSupplier,
-          phone: "+91 9876543210",
-        }],
-      };
-    }
+      if (/SELECT/i.test(sql)) {
+        return {
+          rows: [{
+            ...updatedSupplier,
+            phone: "+91 9876543210",
+          }],
+        };
+      }
 
-    if (/UPDATE suppliers/i.test(sql)) {
-      return { rows: [updatedSupplier] };
-    }
+      if (/UPDATE suppliers/i.test(sql)) {
+        return { rows: [updatedSupplier] };
+      }
 
-    throw new Error("Unexpected database query");
-  });
+      return { rows: [] };
+    },
+    release: () => {},
+  };
+
+  const connectMock = mock.method(pool, "connect", async () => client);
 
   try {
     const response = await request(app)
@@ -298,9 +303,9 @@ test("PATCH suppliers updates a supplier for inventory manager", async () => {
     assert.equal(response.status, 200);
     assert.equal(response.body.message, "Supplier updated successfully");
     assert.deepEqual(response.body.supplier, updatedSupplier);
-    assert.equal(queryCount, 2);
+    assert.equal(queryCount, 4);
   } finally {
-    queryMock.mock.restore();
+    connectMock.mock.restore();
   }
 });
 
@@ -314,22 +319,35 @@ test("PATCH suppliers updates a supplier for admin", async () => {
     is_active: true,
   };
 
-  const queryMock = mock.method(pool, "query", async (sql) => {
-    if (/SELECT/i.test(sql)) {
-      return {
-        rows: [{
-          id: 1,
-          name: "ABC Suppliers",
-          email: "sales@abc.com",
-          phone: null,
-          contact_name: null,
-          is_active: true,
-        }],
-      };
-    }
+  let queryCount = 0;
 
-    return { rows: [updatedSupplier] };
-  });
+  const client = {
+    query: async (sql) => {
+      queryCount++;
+
+      if (/SELECT/i.test(sql)) {
+        return {
+          rows: [{
+            id: 1,
+            name: "ABC Suppliers",
+            email: "sales@abc.com",
+            phone: null,
+            contact_name: null,
+            is_active: true,
+          }],
+        };
+      }
+
+      if (/UPDATE suppliers/i.test(sql)) {
+        return { rows: [updatedSupplier] };
+      }
+
+      return { rows: [] };
+    },
+    release: () => {},
+  };
+
+  const connectMock = mock.method(pool, "connect", async () => client);
 
   try {
     const response = await request(app)
@@ -341,9 +359,9 @@ test("PATCH suppliers updates a supplier for admin", async () => {
 
     assert.equal(response.status, 200);
     assert.equal(response.body.supplier.name, "Updated Suppliers");
-    assert.equal(queryMock.mock.calls.length, 2);
+    assert.equal(queryCount, 4);
   } finally {
-    queryMock.mock.restore();
+    connectMock.mock.restore();
   }
 });
 
@@ -375,9 +393,22 @@ test("PATCH suppliers rejects empty update requests", async () => {
 test("PATCH suppliers returns 404 when supplier does not exist", async () => {
   const token = createToken("inventory_manager");
 
-  const queryMock = mock.method(pool, "query", async () => ({
-    rows: [],
-  }));
+  let queryCount = 0;
+
+  const client = {
+    query: async (sql) => {
+      queryCount++;
+
+      if (/SELECT/i.test(sql)) {
+        return { rows: [] };
+      }
+
+      return { rows: [] };
+    },
+    release: () => {},
+  };
+
+  const connectMock = mock.method(pool, "connect", async () => client);
 
   try {
     const response = await request(app)
@@ -387,9 +418,9 @@ test("PATCH suppliers returns 404 when supplier does not exist", async () => {
 
     assert.equal(response.status, 404);
     assert.equal(response.body.message, "Supplier not found");
-    assert.equal(queryMock.mock.calls.length, 1);
+    assert.equal(queryCount, 3);
   } finally {
-    queryMock.mock.restore();
+    connectMock.mock.restore();
   }
 });
 

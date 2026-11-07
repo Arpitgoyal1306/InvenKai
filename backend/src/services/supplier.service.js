@@ -157,6 +157,7 @@ async function getSupplierById(id) {
 }
 
 // Update an existing supplier
+
 async function updateSupplier(id, updates) {
   // Validate supplier ID
   if (!Number.isSafeInteger(id) || id <= 0) {
@@ -191,138 +192,168 @@ async function updateSupplier(id, updates) {
     throw error;
   }
 
-  // Fetch existing active supplier
-  const existingResult = await pool.query(
-    `SELECT *
-     FROM suppliers
-     WHERE id = $1
-       AND is_active = TRUE`,
-    [id]
-  );
+  const client = await pool.connect();
+  let transactionStarted = false;
 
-  const existingSupplier = existingResult.rows[0];
+  try {
+    // Start transaction
+    await client.query("BEGIN");
+    transactionStarted = true;
 
-  if (!existingSupplier) {
-    return null;
-  }
-
-  // Merge existing data with new updates
-  const updatedSupplier = {
-    ...existingSupplier,
-    ...updates,
-  };
-
-  // Validate name
-  if (
-    typeof updatedSupplier.name !== "string" ||
-    !updatedSupplier.name.trim() ||
-    updatedSupplier.name.trim().length > 200
-  ) {
-    const error = new Error(
-      "Supplier name is required and must not exceed 200 characters"
+    // Lock the supplier row until the transaction finishes
+    const existingResult = await client.query(
+      `SELECT *
+       FROM suppliers
+       WHERE id = $1
+         AND is_active = TRUE
+       FOR UPDATE`,
+      [id]
     );
-    error.statusCode = 400;
-    throw error;
-  }
 
-  // Validate contact name
-  if (
-    updatedSupplier.contact_name != null &&
-    (
-      typeof updatedSupplier.contact_name !== "string" ||
-      updatedSupplier.contact_name.trim().length > 100
-    )
-  ) {
-    const error = new Error(
-      "Contact name must be a string of at most 100 characters"
+    const existingSupplier = existingResult.rows[0];
+
+    if (!existingSupplier) {
+      await client.query("COMMIT");
+      transactionStarted = false;
+      return null;
+    }
+
+    // Merge updates with the latest locked database values
+    const updatedSupplier = {
+      ...existingSupplier,
+      ...updates,
+    };
+
+    // Validate name
+    if (
+      typeof updatedSupplier.name !== "string" ||
+      !updatedSupplier.name.trim() ||
+      updatedSupplier.name.trim().length > 200
+    ) {
+      const error = new Error(
+        "Supplier name is required and must not exceed 200 characters"
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Validate contact name
+    if (
+      updatedSupplier.contact_name != null &&
+      (
+        typeof updatedSupplier.contact_name !== "string" ||
+        updatedSupplier.contact_name.trim().length > 100
+      )
+    ) {
+      const error = new Error(
+        "Contact name must be a string of at most 100 characters"
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Validate email
+    if (
+      updatedSupplier.email != null &&
+      typeof updatedSupplier.email !== "string"
+    ) {
+      const error = new Error("Email must be a string");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const normalizedEmail =
+      updatedSupplier.email?.trim().toLowerCase() || null;
+
+    if (
+      normalizedEmail &&
+      (
+        normalizedEmail.length > 255 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
+      )
+    ) {
+      const error = new Error("Please provide a valid email address");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Validate phone
+    if (
+      updatedSupplier.phone != null &&
+      typeof updatedSupplier.phone !== "string"
+    ) {
+      const error = new Error("Phone must be a string");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const normalizedPhone =
+      updatedSupplier.phone?.trim() || null;
+
+    if (
+      normalizedPhone &&
+      (
+        normalizedPhone.length > 30 ||
+        !/^\+?[0-9\s().-]+$/.test(normalizedPhone) ||
+        normalizedPhone.replace(/\D/g, "").length < 7 ||
+        normalizedPhone.replace(/\D/g, "").length > 15
+      )
+    ) {
+      const error = new Error("Please provide a valid phone number");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Require at least one contact method
+    if (!normalizedEmail && !normalizedPhone) {
+      const error = new Error(
+        "At least one of email or phone is required"
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Update supplier inside the same transaction
+    const result = await client.query(
+      `UPDATE suppliers
+       SET name = $1,
+           contact_name = $2,
+           email = $3,
+           phone = $4,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $5
+         AND is_active = TRUE
+       RETURNING *`,
+      [
+        updatedSupplier.name.trim(),
+        updatedSupplier.contact_name?.trim() || null,
+        normalizedEmail,
+        normalizedPhone,
+        id,
+      ]
     );
-    error.statusCode = 400;
+
+    // Commit transaction
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    return result.rows[0] || null;
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        // Preserve the original error if rollback also fails
+      }
+    }
+
     throw error;
+  } finally {
+    // Always release the database connection
+    client.release();
   }
-
-  // Validate email
-  if (
-    updatedSupplier.email != null &&
-    typeof updatedSupplier.email !== "string"
-  ) {
-    const error = new Error("Email must be a string");
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const normalizedEmail =
-    updatedSupplier.email?.trim().toLowerCase() || null;
-
-  if (
-    normalizedEmail &&
-    (
-      normalizedEmail.length > 255 ||
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
-    )
-  ) {
-    const error = new Error("Please provide a valid email address");
-    error.statusCode = 400;
-    throw error;
-  }
-
-  // Validate phone
-  if (
-    updatedSupplier.phone != null &&
-    typeof updatedSupplier.phone !== "string"
-  ) {
-    const error = new Error("Phone must be a string");
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const normalizedPhone =
-    updatedSupplier.phone?.trim() || null;
-
-  if (
-    normalizedPhone &&
-    (
-      normalizedPhone.length > 30 ||
-      !/^\+?[0-9\s().-]+$/.test(normalizedPhone) ||
-      normalizedPhone.replace(/\D/g, "").length < 7 ||
-      normalizedPhone.replace(/\D/g, "").length > 15
-    )
-  ) {
-    const error = new Error("Please provide a valid phone number");
-    error.statusCode = 400;
-    throw error;
-  }
-
-  // Require at least one contact method
-  if (!normalizedEmail && !normalizedPhone) {
-    const error = new Error(
-      "At least one of email or phone is required"
-    );
-    error.statusCode = 400;
-    throw error;
-  }
-
-  // Update supplier
-  const result = await pool.query(
-    `UPDATE suppliers
-     SET name = $1,
-         contact_name = $2,
-         email = $3,
-         phone = $4,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE id = $5
-       AND is_active = TRUE
-     RETURNING *`,
-    [
-      updatedSupplier.name.trim(),
-      updatedSupplier.contact_name?.trim() || null,
-      normalizedEmail,
-      normalizedPhone,
-      id,
-    ]
-  );
-
-  return result.rows[0] || null;
 }
+
 
 const deleteSupplier = async (id) => {
   if (!Number.isSafeInteger(id) || id <= 0) {
