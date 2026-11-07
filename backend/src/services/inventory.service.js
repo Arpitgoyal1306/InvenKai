@@ -1,5 +1,13 @@
 const pool = require("../config/database");
 
+const MAX_STOCK = 2147483647;
+
+function createError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
 async function getInventoryByProductId(productId) {
   const result = await pool.query(
     `SELECT product_id, quantity, created_at, updated_at
@@ -11,73 +19,155 @@ async function getInventoryByProductId(productId) {
   return result.rows[0] ?? null;
 }
 
-async function decreaseStock(productId, quantity) {
+async function changeStock(productId, quantity, userId, transactionType) {
   if (
     !Number.isSafeInteger(productId) ||
     productId <= 0 ||
     !Number.isSafeInteger(quantity) ||
-    quantity <= 0
+    quantity <= 0 ||
+    quantity > MAX_STOCK
   ) {
     throw new Error("Product ID and quantity must be positive integers");
   }
 
-  const result = await pool.query(
-    `UPDATE inventory
-     SET quantity = quantity - $2,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE product_id = $1
-       AND quantity >= $2
-     RETURNING product_id, quantity, updated_at`,
-    [productId, quantity],
-  );
-
-  if (result.rowCount === 0) {
-    throw new Error("Product inventory not found or insufficient stock");
+  if (!userId || !/^[1-9]\d*$/.test(String(userId))) {
+    throw new Error("Valid authenticated user ID is required");
   }
 
-  return result.rows[0];
-}
+  const client = await pool.connect();
 
-async function increaseStock(productId, quantity) {
-  if (
-    !Number.isSafeInteger(productId) ||
-    productId <= 0 ||
-    !Number.isSafeInteger(quantity) ||
-    quantity <= 0
-  ) {
-    throw new Error("Product ID and quantity must be positive integers");
-  }
+  try {
+    await client.query("BEGIN");
 
-  const result = await pool.query(
-    `UPDATE inventory
-     SET quantity = quantity + $2,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE product_id = $1
-       AND quantity <= 2147483647 - $2
-     RETURNING product_id, quantity, updated_at`,
-    [productId, quantity],
-  );
-
-  if (result.rowCount === 0) {
-    const existingInventory = await pool.query(
-      `SELECT product_id
+    // Lock the inventory row to prevent concurrent stock changes
+    // from calculating their before/after quantities incorrectly.
+    const inventoryResult = await client.query(
+      `SELECT product_id, quantity
        FROM inventory
-       WHERE product_id = $1`,
+       WHERE product_id = $1
+       FOR UPDATE`,
       [productId],
     );
 
-    if (existingInventory.rowCount === 0) {
-      throw new Error("Product inventory not found");
+    if (inventoryResult.rowCount === 0) {
+      if (transactionType === "increase") {
+        throw createError("Product inventory not found", 404);
+      }
+
+      throw createError(
+        "Product inventory not found or insufficient stock",
+        409,
+      );
     }
 
-    throw new Error("Stock quantity limit exceeded");
+    const quantityBefore = inventoryResult.rows[0].quantity;
+
+    let quantityAfter;
+
+    if (transactionType === "increase") {
+      if (quantityBefore > MAX_STOCK - quantity) {
+        throw createError("Stock quantity limit exceeded", 409);
+      }
+
+      quantityAfter = quantityBefore + quantity;
+    } else {
+      if (quantityBefore < quantity) {
+        throw createError(
+          "Product inventory not found or insufficient stock",
+          409,
+        );
+      }
+
+      quantityAfter = quantityBefore - quantity;
+    }
+
+    const updateResult = await client.query(
+      `UPDATE inventory
+       SET quantity = $2,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE product_id = $1
+       RETURNING product_id, quantity, updated_at`,
+      [productId, quantityAfter],
+    );
+
+    await client.query(
+      `INSERT INTO inventory_transactions
+        (product_id, performed_by, transaction_type, quantity,
+         quantity_before, quantity_after)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        productId,
+        userId,
+        transactionType,
+        quantity,
+        quantityBefore,
+        quantityAfter,
+      ],
+    );
+
+    await client.query("COMMIT");
+
+    return updateResult.rows[0];
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      // Preserve the original operation error.
+    }
+
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function decreaseStock(productId, quantity, userId) {
+  return changeStock(productId, quantity, userId, "decrease");
+}
+
+async function increaseStock(productId, quantity, userId) {
+  return changeStock(productId, quantity, userId, "increase");
+}
+
+async function getInventoryTransactions({ productId, limit = 20, offset = 0 }) {
+  const values = [];
+  let whereClause = "";
+
+  if (productId !== undefined) {
+    values.push(productId);
+    whereClause = `WHERE product_id = $${values.length}`;
   }
 
-  return result.rows[0];
+  values.push(limit);
+  const limitPlaceholder = `$${values.length}`;
+
+  values.push(offset);
+  const offsetPlaceholder = `$${values.length}`;
+
+  const result = await pool.query(
+    `SELECT
+       id,
+       product_id,
+       performed_by,
+       transaction_type,
+       quantity,
+       quantity_before,
+       quantity_after,
+       created_at
+     FROM inventory_transactions
+     ${whereClause}
+     ORDER BY created_at DESC, id DESC
+     LIMIT ${limitPlaceholder}
+     OFFSET ${offsetPlaceholder}`,
+    values,
+  );
+
+  return result.rows;
 }
 
 module.exports = {
   getInventoryByProductId,
   decreaseStock,
   increaseStock,
+  getInventoryTransactions,
 };

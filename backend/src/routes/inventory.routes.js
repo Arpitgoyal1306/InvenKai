@@ -1,13 +1,62 @@
 const express = require("express");
 const authenticateToken = require("../middleware/auth.middleware");
 const authorizeRoles = require("../middleware/authorize-roles");
+
 const {
   getInventoryByProductId,
   decreaseStock,
   increaseStock,
+  getInventoryTransactions,
 } = require("../services/inventory.service");
 
 const router = express.Router();
+
+// Get inventory transaction history.
+// Any authenticated user can view history.
+router.get("/history", authenticateToken, async (req, res) => {
+  try {
+    const productId =
+      req.query.productId === undefined
+        ? undefined
+        : Number(req.query.productId);
+
+    const limit = req.query.limit === undefined ? 20 : Number(req.query.limit);
+
+    const offset =
+      req.query.offset === undefined ? 0 : Number(req.query.offset);
+
+    if (
+      (productId !== undefined &&
+        (!Number.isSafeInteger(productId) || productId <= 0)) ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 100 ||
+      !Number.isSafeInteger(offset) ||
+      offset < 0
+    ) {
+      return res.status(400).json({
+        message: "Invalid productId, limit, or offset",
+      });
+    }
+
+    const transactions = await getInventoryTransactions({
+      productId,
+      limit,
+      offset,
+    });
+
+    return res.status(200).json({
+      transactions,
+      pagination: { limit, offset },
+    });
+  } catch (error) {
+    console.error("Failed to fetch inventory history:", error);
+
+    return res.status(500).json({
+      message: "Failed to fetch inventory history",
+    });
+  }
+});
 
 // Get inventory for a product.
 // Any authenticated user can view inventory.
@@ -60,23 +109,15 @@ router.patch(
     }
 
     try {
-      const inventory = await decreaseStock(productId, quantity);
+      const inventory = await decreaseStock(productId, quantity, req.user.id);
 
       return res.status(200).json({
         message: "Stock decreased successfully",
         inventory,
       });
     } catch (error) {
-      if (
-        error.message === "Product inventory not found or insufficient stock"
-      ) {
-        return res.status(409).json({
-          message: error.message,
-        });
-      }
-
-      return res.status(500).json({
-        message: "Failed to decrease stock",
+      return res.status(error.statusCode || 500).json({
+        message: error.statusCode ? error.message : "Failed to decrease stock",
       });
     }
   },
@@ -105,26 +146,15 @@ router.patch(
     }
 
     try {
-      const inventory = await increaseStock(productId, quantity);
+      const inventory = await increaseStock(productId, quantity, req.user.id);
 
       return res.status(200).json({
         message: "Stock increased successfully",
         inventory,
       });
     } catch (error) {
-      if (error.message === "Product inventory not found") {
-        return res.status(404).json({
-          message: error.message,
-        });
-      }
-      if (error.message === "Stock quantity limit exceeded") {
-        return res.status(409).json({
-          message: error.message,
-        });
-      }
-
-      return res.status(500).json({
-        message: "Failed to increase stock",
+      return res.status(error.statusCode || 500).json({
+        message: error.statusCode ? error.message : "Failed to increase stock",
       });
     }
   },
