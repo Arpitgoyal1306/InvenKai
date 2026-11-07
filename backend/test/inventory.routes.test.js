@@ -444,3 +444,25 @@ test("GET inventory history handles database errors", async () => {
     queryMock.mock.restore();
   }
 });
+
+test("PATCH increase stock rejects quantity above PostgreSQL INTEGER limit", async () => {
+  const token = createToken("inventory_manager");
+
+  const response = await request(app)
+    .patch("/api/inventory/1/increase")
+    .set("Authorization", `Bearer ${token}`)
+    .send({ quantity: 2147483648 });
+
+  assert.equal(response.status, 400);
+});
+
+test("PATCH decrease stock rejects quantity above PostgreSQL INTEGER limit", async () => {
+  const token = createToken("inventory_manager");
+
+  const response = await request(app)
+    .patch("/api/inventory/1/decrease")
+    .set("Authorization", `Bearer ${token}`)
+    .send({ quantity: 2147483648 });
+
+  assert.equal(response.status, 400);
+});

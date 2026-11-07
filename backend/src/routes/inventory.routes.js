@@ -102,9 +102,13 @@ router.patch(
       });
     }
 
-    if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+    if (
+      !Number.isSafeInteger(quantity) ||
+      quantity <= 0 ||
+      quantity > 2147483647
+    ) {
       return res.status(400).json({
-        message: "Quantity must be a positive integer",
+        message: "Quantity must be a positive integer within the allowed limit",
       });
     }
 
@@ -133,9 +137,13 @@ router.patch(
     const productId = Number(req.params.productId);
     const { quantity } = req.body;
 
-    if (!Number.isSafeInteger(productId) || productId <= 0) {
+    if (
+      !Number.isSafeInteger(quantity) ||
+      quantity <= 0 ||
+      quantity > 2147483647
+    ) {
       return res.status(400).json({
-        message: "Product ID must be a positive integer",
+        message: "Quantity must be a positive integer within the allowed limit",
       });
     }
 
