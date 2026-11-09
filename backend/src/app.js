@@ -1,15 +1,20 @@
 const express = require("express");
 const pool = require("./config/database");
+
 const authRoutes = require("./routes/auth.routes");
 const inventoryRoutes = require("./routes/inventory.routes");
 const supplierRoutes = require("./routes/supplier.routes");
+const reportsRoutes = require("./routes/reports.routes");
 
 const app = express();
 
 app.use(express.json());
+
+// API routes
 app.use("/api/auth", authRoutes);
 app.use("/api/inventory", inventoryRoutes);
 app.use("/api/suppliers", supplierRoutes);
+app.use("/api/reports", reportsRoutes);
 
 app.get("/", (req, res) => {
   res.json({
@@ -33,6 +38,7 @@ app.get("/health", async (req, res) => {
   }
 });
 
+// Handle unknown routes
 app.use((req, res) => {
   res.status(404).json({
     message: "Route not found",
