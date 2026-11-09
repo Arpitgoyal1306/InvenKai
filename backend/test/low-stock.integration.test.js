@@ -1,4 +1,3 @@
-
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
@@ -130,7 +129,17 @@ test("getLowStockProducts correctly filters products using PostgreSQL", async ()
     // Product without an inventory record should not be returned.
     assert.ok(!returnedIds.includes(Number(productIds["Missing Inventory"])));
 
-    // Exactly two products should match.
-    assert.equal(lowStockProducts.length, 2);
+    // Only verify products created by this test.
+    const testProductIds = [
+      Number(productIds["Below Threshold"]),
+      Number(productIds["Equal Threshold"]),
+    ];
+
+    const matchingTestProducts = lowStockProducts.filter((product) =>
+      testProductIds.includes(Number(product.product_id)),
+    );
+
+    // Exactly two products created by this test should match.
+    assert.equal(matchingTestProducts.length, 2);
   });
 });
