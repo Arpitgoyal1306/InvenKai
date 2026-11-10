@@ -15,7 +15,7 @@ async function withTransaction(callback) {
   const client = await pool.connect();
 
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
     await callback(client);
   } finally {
     try {
