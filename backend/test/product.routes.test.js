@@ -4,6 +4,7 @@ const request = require("supertest");
 const jwt = require("jsonwebtoken");
 
 const pool = require("../src/config/database");
+const productCache = require("../src/services/product-cache.service");
 const app = require("../src/app");
 
 function createToken(role) {
@@ -453,6 +454,282 @@ test("DELETE products returns 409 when product has dependent records", async () 
 
     assert.equal(response.status, 409);
   } finally {
+    queryMock.mock.restore();
+  }
+});
+
+
+// --------------------------------------------------
+// PRODUCT CATALOG CACHE INTEGRATION TESTS
+// --------------------------------------------------
+
+test("GET products uses the product cache service", async () => {
+  const cacheMock = mock.method(
+    productCache,
+    "getCachedProducts",
+    async () => [product]
+  );
+
+  try {
+    const response = await request(app)
+      .get("/api/products?limit=10&offset=0")
+      .set("Authorization", `Bearer ${createToken("customer")}`);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.products, [product]);
+    assert.equal(cacheMock.mock.calls.length, 1);
+    assert.deepEqual(cacheMock.mock.calls[0].arguments, [10, 0]);
+  } finally {
+    cacheMock.mock.restore();
+  }
+});
+
+test("GET product by ID uses the product cache service", async () => {
+  const cacheMock = mock.method(
+    productCache,
+    "getCachedProductById",
+    async () => product
+  );
+
+  try {
+    const response = await request(app)
+      .get("/api/products/1")
+      .set("Authorization", `Bearer ${createToken("customer")}`);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.product, product);
+    assert.equal(cacheMock.mock.calls.length, 1);
+    assert.deepEqual(cacheMock.mock.calls[0].arguments, ["1"]);
+  } finally {
+    cacheMock.mock.restore();
+  }
+});
+
+test("POST products invalidates cache after successful creation", async () => {
+  const queryMock = mock.method(pool, "query", async () => ({
+    rows: [product],
+  }));
+
+  const invalidationMock = mock.method(
+    productCache,
+    "invalidateProductCatalog",
+    async () => true
+  );
+
+  try {
+    const response = await request(app)
+      .post("/api/products")
+      .set("Authorization", `Bearer ${createToken("inventory_manager")}`)
+      .send({
+        category_id: 2,
+        name: "Laptop",
+        description: "Gaming laptop",
+        sku: "LAP-001",
+        price: 75000,
+      });
+
+    assert.equal(response.status, 201);
+    assert.equal(invalidationMock.mock.calls.length, 1);
+  } finally {
+    invalidationMock.mock.restore();
+    queryMock.mock.restore();
+  }
+});
+
+test("POST products does not invalidate cache when creation fails", async () => {
+  const queryMock = mock.method(pool, "query", async () => {
+    const error = new Error("Duplicate SKU");
+    error.code = "23505";
+    throw error;
+  });
+
+  const invalidationMock = mock.method(
+    productCache,
+    "invalidateProductCatalog",
+    async () => true
+  );
+
+  try {
+    const response = await request(app)
+      .post("/api/products")
+      .set("Authorization", `Bearer ${createToken("admin")}`)
+      .send({
+        category_id: 2,
+        name: "Laptop",
+        sku: "LAP-001",
+        price: 75000,
+      });
+
+    assert.equal(response.status, 409);
+    assert.equal(invalidationMock.mock.calls.length, 0);
+  } finally {
+    invalidationMock.mock.restore();
+    queryMock.mock.restore();
+  }
+});
+
+test("PATCH products invalidates cache after successful update", async () => {
+  const updatedProduct = {
+    ...product,
+    name: "Gaming Laptop",
+  };
+
+  const client = {
+    query: async (sql) => {
+      if (/SELECT/i.test(sql)) {
+        return { rows: [product] };
+      }
+
+      if (/UPDATE products/i.test(sql)) {
+        return { rows: [updatedProduct] };
+      }
+
+      return { rows: [] };
+    },
+    release: () => {},
+  };
+
+  const connectMock = mock.method(pool, "connect", async () => client);
+
+  const invalidationMock = mock.method(
+    productCache,
+    "invalidateProductCatalog",
+    async () => true
+  );
+
+  try {
+    const response = await request(app)
+      .patch("/api/products/1")
+      .set("Authorization", `Bearer ${createToken("inventory_manager")}`)
+      .send({ name: "Gaming Laptop" });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.product, updatedProduct);
+    assert.equal(invalidationMock.mock.calls.length, 1);
+  } finally {
+    invalidationMock.mock.restore();
+    connectMock.mock.restore();
+  }
+});
+
+test("PATCH products does not invalidate cache when update fails", async () => {
+  const client = {
+    query: async (sql) => {
+      if (/SELECT/i.test(sql)) {
+        return { rows: [product] };
+      }
+
+      if (/UPDATE products/i.test(sql)) {
+        const error = new Error("Duplicate SKU");
+        error.code = "23505";
+        throw error;
+      }
+
+      return { rows: [] };
+    },
+    release: () => {},
+  };
+
+  const connectMock = mock.method(pool, "connect", async () => client);
+
+  const invalidationMock = mock.method(
+    productCache,
+    "invalidateProductCatalog",
+    async () => true
+  );
+
+  try {
+    const response = await request(app)
+      .patch("/api/products/1")
+      .set("Authorization", `Bearer ${createToken("admin")}`)
+      .send({ sku: "EXISTING-SKU" });
+
+    assert.equal(response.status, 409);
+    assert.equal(invalidationMock.mock.calls.length, 0);
+  } finally {
+    invalidationMock.mock.restore();
+    connectMock.mock.restore();
+  }
+});
+
+test("DELETE products invalidates cache after successful deletion", async () => {
+  const queryMock = mock.method(pool, "query", async () => ({
+    rows: [product],
+  }));
+
+  const invalidationMock = mock.method(
+    productCache,
+    "invalidateProductCatalog",
+    async () => true
+  );
+
+  try {
+    const response = await request(app)
+      .delete("/api/products/1")
+      .set("Authorization", `Bearer ${createToken("admin")}`);
+
+    assert.equal(response.status, 200);
+    assert.equal(invalidationMock.mock.calls.length, 1);
+  } finally {
+    invalidationMock.mock.restore();
+    queryMock.mock.restore();
+  }
+});
+
+test("DELETE products does not invalidate cache when deletion fails", async () => {
+  const queryMock = mock.method(pool, "query", async () => {
+    const error = new Error("Foreign key violation");
+    error.code = "23503";
+    throw error;
+  });
+
+  const invalidationMock = mock.method(
+    productCache,
+    "invalidateProductCatalog",
+    async () => true
+  );
+
+  try {
+    const response = await request(app)
+      .delete("/api/products/1")
+      .set("Authorization", `Bearer ${createToken("admin")}`);
+
+    assert.equal(response.status, 409);
+    assert.equal(invalidationMock.mock.calls.length, 0);
+  } finally {
+    invalidationMock.mock.restore();
+    queryMock.mock.restore();
+  }
+});
+
+test("POST products remains successful when cache invalidation fails", async () => {
+  const queryMock = mock.method(pool, "query", async () => ({
+    rows: [product],
+  }));
+
+  const invalidationMock = mock.method(
+    productCache,
+    "invalidateProductCatalog",
+    async () => false
+  );
+
+  try {
+    const response = await request(app)
+      .post("/api/products")
+      .set("Authorization", `Bearer ${createToken("inventory_manager")}`)
+      .send({
+        category_id: 2,
+        name: "Laptop",
+        description: "Gaming laptop",
+        sku: "LAP-001",
+        price: 75000,
+      });
+
+    assert.equal(response.status, 201);
+    assert.equal(response.body.message, "Product created successfully");
+    assert.equal(invalidationMock.mock.calls.length, 1);
+  } finally {
+    invalidationMock.mock.restore();
     queryMock.mock.restore();
   }
 });

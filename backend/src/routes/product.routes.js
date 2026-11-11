@@ -5,11 +5,11 @@ const authorizeRoles = require("../middleware/authorize-roles");
 
 const {
   createProduct,
-  getProducts,
-  getProductById,
   updateProduct,
   deleteProduct,
 } = require("../services/product.service");
+
+const productCache = require("../services/product-cache.service");
 
 const router = express.Router();
 
@@ -22,6 +22,9 @@ router.post(
   async (req, res) => {
     try {
       const product = await createProduct(req.body);
+
+      // Invalidate cached catalog after successful creation.
+      await productCache.invalidateProductCatalog();
 
       return res.status(201).json({
         message: "Product created successfully",
@@ -45,11 +48,10 @@ router.post(
 // Any authenticated user can view products.
 router.get("/", authenticateToken, async (req, res) => {
   const limit = req.query.limit === undefined ? 10 : Number(req.query.limit);
-
   const offset = req.query.offset === undefined ? 0 : Number(req.query.offset);
 
   try {
-    const products = await getProducts(limit, offset);
+    const products = await productCache.getCachedProducts(limit, offset);
 
     return res.status(200).json({
       products,
@@ -77,7 +79,7 @@ router.get("/:id", authenticateToken, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const product = await getProductById(id);
+    const product = await productCache.getCachedProductById(id);
 
     if (!product) {
       return res.status(404).json({
@@ -111,6 +113,9 @@ router.patch(
     try {
       const product = await updateProduct(id, req.body);
 
+      // Invalidate cached catalog after successful update.
+      await productCache.invalidateProductCatalog();
+
       return res.status(200).json({
         message: "Product updated successfully",
         product,
@@ -140,6 +145,9 @@ router.delete(
 
     try {
       const product = await deleteProduct(id);
+
+      // Invalidate cached catalog after successful deletion.
+      await productCache.invalidateProductCatalog();
 
       return res.status(200).json({
         message: "Product deleted successfully",

@@ -34,6 +34,18 @@ function validateProductId(id) {
   }
 }
 
+function validateProductPagination(limit, offset) {
+  if (
+    !Number.isSafeInteger(limit) ||
+    limit <= 0 ||
+    limit > 100 ||
+    !Number.isSafeInteger(offset) ||
+    offset < 0
+  ) {
+    throw createError("Invalid pagination values");
+  }
+}
+
 function validateProductData(data, allowedFields, requireAll = false) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw createError("Invalid product data");
@@ -150,15 +162,7 @@ async function createProduct(productData) {
 
 // GET ALL PRODUCTS
 async function getProducts(limit = 10, offset = 0) {
-  if (
-    !Number.isSafeInteger(limit) ||
-    limit <= 0 ||
-    limit > 100 ||
-    !Number.isSafeInteger(offset) ||
-    offset < 0
-  ) {
-    throw createError("Invalid pagination values");
-  }
+  validateProductPagination(limit, offset);
 
   const result = await pool.query(
     `SELECT *
@@ -274,7 +278,6 @@ async function updateProduct(id, productData) {
 }
 
 // DELETE PRODUCT
-
 async function deleteProduct(id) {
   validateProductId(id);
 
@@ -307,11 +310,12 @@ async function deleteProduct(id) {
   }
 }
 
-
 module.exports = {
   createProduct,
   getProducts,
   getProductById,
   updateProduct,
   deleteProduct,
+  validateProductId,
+  validateProductPagination,
 };
