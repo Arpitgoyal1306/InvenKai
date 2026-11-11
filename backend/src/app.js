@@ -6,6 +6,7 @@ const inventoryRoutes = require("./routes/inventory.routes");
 const supplierRoutes = require("./routes/supplier.routes");
 const reportsRoutes = require("./routes/reports.routes");
 const productRoutes = require("./routes/product.routes");
+const ordersRoutes = require("./routes/orders.routes");
 
 const app = express();
 
@@ -17,6 +18,7 @@ app.use("/api/inventory", inventoryRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/reports", reportsRoutes);
 app.use("/api/products", productRoutes);
+app.use("/api/orders", ordersRoutes);
 
 app.get("/", (req, res) => {
   res.json({
