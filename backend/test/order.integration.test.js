@@ -123,6 +123,82 @@ async function createSecondCustomer() {
   return result.rows[0].id;
 }
 
+
+test("createOrder rejects missing or malformed item arrays", async () => {
+  const invalidInputs = [undefined, null, "not-an-array", {}, []];
+
+  for (const items of invalidInputs) {
+    await assert.rejects(
+      createOrder("1", items, testPool),
+      (error) => error.statusCode === 400,
+    );
+  }
+});
+
+test("createOrder rejects malformed items and invalid product IDs", async () => {
+  const invalidInputs = [
+    [null],
+    [[]],
+    ["invalid"],
+    [{ productId: null, quantity: 1 }],
+    [{ productId: {}, quantity: 1 }],
+    [{ productId: 0, quantity: 1 }],
+    [{ productId: -1, quantity: 1 }],
+    [{ productId: "01", quantity: 1 }],
+    [{ productId: "1.5", quantity: 1 }],
+    [{ productId: 9223372036854776000, quantity: 1 }],
+    [{ productId: "9223372036854775808", quantity: 1 }],
+  ];
+
+  for (const items of invalidInputs) {
+    await assert.rejects(
+      createOrder("1", items, testPool),
+      (error) => error.statusCode === 400,
+    );
+  }
+});
+
+test("createOrder rejects duplicate product IDs", async () => {
+  await assert.rejects(
+    createOrder(
+      "1",
+      [
+        { productId: "101", quantity: 1 },
+        { productId: "101", quantity: 2 },
+      ],
+      testPool,
+    ),
+    {
+      statusCode: 400,
+      message: "Duplicate products are not allowed in an order",
+    },
+  );
+});
+
+test("createOrder rejects invalid quantities", async () => {
+  const invalidQuantities = [0, -1, 1.5, "2", null, NaN, Infinity, 2147483648];
+
+  for (const quantity of invalidQuantities) {
+    await assert.rejects(
+      createOrder("1", [{ productId: "101", quantity }], testPool),
+      (error) => error.statusCode === 400,
+    );
+  }
+});
+
+test("createOrder rejects orders containing more than 50 items", async () => {
+  const items = Array.from({ length: 51 }, (_, index) => ({
+    productId: String(index + 1),
+    quantity: 1,
+  }));
+
+  await assert.rejects(createOrder("1", items, testPool), {
+    statusCode: 400,
+    message: "An order cannot contain more than 50 items",
+  });
+});
+
+
 test("createOrder creates an order and deducts inventory", async () => {
   let fixture;
 
