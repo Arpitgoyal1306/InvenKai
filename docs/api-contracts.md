@@ -38,10 +38,13 @@ The token is obtained from the login endpoint and expires after one hour.
 
 ### Role-based authorization
 
-The backend uses these roles:
+The application defines these roles:
 
 - `admin`
 - `inventory_manager`
+- `customer`
+
+The `admin` and `inventory_manager` roles are staff roles used by endpoints with explicit role restrictions. Endpoints marked **Any authenticated role** accept any valid authenticated role, including `customer`.
 
 | HTTP status | Condition | Response |
 |---|---|---|
@@ -85,7 +88,7 @@ Success response — **201 Created**
     "id": 1,
     "name": "Aarav Sharma",
     "email": "aarav@example.com",
-    "role": "inventory_manager",
+    "role": "customer",
     "created_at": "2026-11-12T10:00:00.000Z"
   }
 }
@@ -168,8 +171,6 @@ Success response — **200 OK**
 The user object contains the authenticated user's ID and role from the verified token.
 
 Errors: Common authentication errors described in Section 2.
-
-
 
 ## 4. Product Endpoints
 
@@ -634,7 +635,6 @@ Errors:
 | 404 | Supplier not found |
 | 401 / 403 | Authentication or role requirement not met |
 | 500 | `{"message":"Failed to delete supplier"}` |
-
 
 ## 6. Inventory Endpoints
 
