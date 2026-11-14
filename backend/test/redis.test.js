@@ -211,7 +211,6 @@ test("closes a ready Redis connection during shutdown", async () => {
   assert.equal(manager.isRedisReady(), false);
 });
 
-
 test("destroys an open but not ready Redis connection during shutdown", async () => {
   const mockClient = createMockClient();
 
@@ -221,8 +220,8 @@ test("destroys an open but not ready Redis connection during shutdown", async ()
     logger: createLogger(),
   });
 
-  // Start a connection attempt that fails after opening the socket.
   mockClient.connect = async () => {
+    mockClient.connectCalls++;
     mockClient.isOpen = true;
     mockClient.isReady = false;
     throw new Error("Redis unavailable");
@@ -247,7 +246,6 @@ test("shutdown is safe when no Redis client exists", async () => {
   assert.equal(manager.client, null);
 });
 
-
 test("destroys a pending Redis connection during shutdown", async () => {
   const mockClient = createMockClient();
   let rejectConnection;
@@ -262,30 +260,31 @@ test("destroys a pending Redis connection during shutdown", async () => {
     });
   };
 
+  // Simulate node-redis rejecting the pending connect promise on destroy.
+  mockClient.destroy = () => {
+    mockClient.destroyCalls++;
+    mockClient.isOpen = false;
+    mockClient.isReady = false;
+
+    rejectConnection(new Error("Connection closed during shutdown"));
+  };
+
   const manager = createRedisManager({
     url: "redis://localhost:6379",
     createClientFn: () => mockClient,
     logger: createLogger(),
   });
 
-  // Begin connecting, but leave the connection pending.
   const connectionPromise = manager.connectRedis();
 
   assert.equal(mockClient.isOpen, true);
   assert.equal(manager.isRedisReady(), false);
 
-  // Shutdown must destroy the open, not-ready client.
   await manager.closeRedis();
 
+  assert.equal(await connectionPromise, false);
   assert.equal(mockClient.destroyCalls, 1);
   assert.equal(mockClient.closeCalls, 0);
-  assert.equal(manager.client, null);
-
-  // Simulate the pending connection failing because shutdown destroyed it.
-  rejectConnection(new Error("Connection closed during shutdown"));
-
-  // The pending attempt should be handled without an unhandled rejection.
-  assert.equal(await connectionPromise, false);
   assert.equal(manager.client, null);
   assert.equal(manager.isRedisReady(), false);
 });

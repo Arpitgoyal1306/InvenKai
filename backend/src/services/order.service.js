@@ -1,4 +1,5 @@
 const pool = require("../config/database");
+const { publishInventoryUpdated } = require("./inventory-events.service");
 
 const MAX_STOCK = 2147483647;
 const MAX_BIGINT = 9223372036854775807n;
@@ -221,13 +222,21 @@ async function getOrderById(userId, orderId, db = pool) {
   return order;
 }
 
-// Create an order and deduct inventory atomically.
-async function createOrder(userId, requestedItems, db = pool) {
+
+async function createOrder(
+  userId,
+  requestedItems,
+  db = pool,
+  publishInventoryUpdatedFn = publishInventoryUpdated,
+) {
   const normalizedUserId = normalizeId(userId);
   const items = validateOrderItems(requestedItems);
 
   const client = await db.connect();
+
   let clientReleased = false;
+  let orderResponse;
+  const inventoryUpdates = [];
 
   try {
     await client.query("BEGIN");
@@ -294,7 +303,7 @@ async function createOrder(userId, requestedItems, db = pool) {
 
     const order = orderResult.rows[0];
 
-    // Save order item snapshots using database product details.
+    // Save order item snapshots.
     for (const item of items) {
       const product = productsById.get(item.productId);
 
@@ -351,9 +360,15 @@ async function createOrder(userId, requestedItems, db = pool) {
           order.id,
         ],
       );
+
+      // Keep event data until the whole order commits.
+      inventoryUpdates.push({
+        productId: item.productId,
+        quantity: quantityAfter,
+      });
     }
 
-    // Calculate the final amount using database-generated line totals.
+    // Calculate the final amount.
     const totalResult = await client.query(
       `UPDATE orders
        SET total_amount = (
@@ -384,9 +399,10 @@ async function createOrder(userId, requestedItems, db = pool) {
       [order.id],
     );
 
+    // Commit the complete order and all inventory deductions.
     await client.query("COMMIT");
 
-    return {
+    orderResponse = {
       ...totalResult.rows[0],
       items: itemsResult.rows,
     };
@@ -394,7 +410,7 @@ async function createOrder(userId, requestedItems, db = pool) {
     try {
       await client.query("ROLLBACK");
     } catch (rollbackError) {
-      // Discard the connection if its transaction state is uncertain.
+      // Discard the connection if transaction state is uncertain.
       client.release(rollbackError);
       clientReleased = true;
     }
@@ -405,7 +421,20 @@ async function createOrder(userId, requestedItems, db = pool) {
       client.release();
     }
   }
+
+  // Publish only after the entire order transaction commits
+  // and the PostgreSQL client has been released.
+  for (const update of inventoryUpdates) {
+    try {
+      await publishInventoryUpdatedFn(update);
+    } catch {
+      // Notification failures must not fail a committed order.
+    }
+  }
+
+  return orderResponse;
 }
+
 
 module.exports = {
   createOrder,
