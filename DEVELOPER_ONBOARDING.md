@@ -203,7 +203,8 @@ cp .env.example .env
 Open `backend/.env` in your editor and fill in the values locally:
 
 ```dotenv
-DATABASE_URL=your_own_neon_postgresql_connection_string
+DATABASE_URL=your_own_neon_development_connection_string
+TEST_DATABASE_URL=your_own_separate_neon_test_connection_string
 JWT_SECRET=your_long_random_local_secret
 PORT=5001
 CLIENT_URL=http://localhost:5173
@@ -211,7 +212,10 @@ CLIENT_URL=http://localhost:5173
 
 Notes:
 
-- Replace the first value with the connection string for **your assigned Neon branch**.
+- Set `DATABASE_URL` to the connection string for **your assigned development Neon branch**.
+- Set `TEST_DATABASE_URL` to a **separate Neon branch/database used only for automated tests**. Do not point it at your development or production database. If the team has not assigned a test branch, ask the project lead before creating or choosing one.
+- The test database must have the same schema as the current application. Apply the repository migrations to it before running integration tests (see below).
+- `npm test` sets `NODE_ENV=test`; the backend database configuration then uses `TEST_DATABASE_URL` instead of `DATABASE_URL`.
 - Generate your own long, random local JWT secret. Do not reuse a teammate's secret.
 - Keep `.env` private. It must remain untracked by Git.
 - The committed `.env.example` is a template. Do not put real credentials in it.
@@ -232,9 +236,17 @@ Run:
 npm run migrate -- up
 ```
 
-This applies pending migrations to the database selected by your local `DATABASE_URL`.
+This applies pending migrations to the database selected by `DATABASE_URL`.
 
 Run it only after checking that `.env` points to your own assigned development branch. Never point it at production or another developer's database.
+
+To prepare the separate test database, run the same migrations while temporarily directing the migration command to `TEST_DATABASE_URL`:
+
+```bash
+DATABASE_URL="$TEST_DATABASE_URL" npm run migrate -- up
+```
+
+This command uses the test database URL only for that migration process. Verify the value before running it. Never run migrations against production or a teammate's database.
 
 If the project lead tells you that your Neon branch already has the schema or migration history has been initialized, do not attempt to reset or re-baseline it. Ask before running any repair or destructive command.
 
@@ -388,10 +400,19 @@ Make sure the terminal is in `InvenKai/backend`, not the repository root. The de
 ### Database connection fails
 
 - Confirm that `backend/.env` exists.
-- Confirm `DATABASE_URL` belongs to your assigned Neon branch.
+- For normal development, confirm `DATABASE_URL` belongs to your assigned development Neon branch.
+- For tests, confirm `TEST_DATABASE_URL` points to the separate test-only database and that its migrations have been applied.
 - Check that the connection string is complete and has not been accidentally quoted or split.
 - Confirm the Neon project/branch is active and accessible.
 - Do not share the password while asking for help. Share only the error message with credentials removed.
+
+### Tests fail with `TEST_DATABASE_URL is required`
+
+- Confirm that `TEST_DATABASE_URL` is set in `backend/.env`.
+- Make sure you are running `npm test` from the `backend` directory.
+- Confirm the test database is separate from development and production.
+- Apply pending migrations to the test database using the command in section 7D.
+- Never work around this error by pointing `TEST_DATABASE_URL` at your development or production database.
 
 ### API returns 404
 
