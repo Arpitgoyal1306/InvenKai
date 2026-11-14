@@ -42,6 +42,17 @@ app.get("/health", async (req, res) => {
   }
 });
 
+// Handle malformed JSON errors
+app.use((err, req, res, next) => {
+  if (err.type === "entity.parse.failed") {
+    return res.status(400).json({
+      message: "Invalid JSON request body",
+    });
+  }
+
+  next(err);
+});
+
 // Handle unknown routes
 app.use((req, res) => {
   res.status(404).json({
