@@ -8,6 +8,7 @@ function createRedisManager({
 } = {}) {
   let client = null;
   let connectPromise = null;
+  let closePromise = null;
 
   function isRedisReady() {
     return client?.isReady === true;
@@ -18,7 +19,12 @@ function createRedisManager({
       logger.warn(
         "[Redis] REDIS_URL is not configured. Continuing without Redis.",
       );
+
       return Promise.resolve(false);
+    }
+
+    if (closePromise) {
+      return closePromise.then(() => connectRedis());
     }
 
     if (isRedisReady()) {
@@ -64,55 +70,93 @@ function createRedisManager({
       }
     } catch (error) {
       logger.error("[Redis] Client initialization failed:", error.message);
+
       client = null;
       return Promise.resolve(false);
     }
 
-    connectPromise = client
-      .connect()
-      .then(() => {
-        logger.info("[Redis] Connection established.");
-        return true;
-      })
-      .catch((error) => {
-        logger.error("[Redis] Initial connection failed:", error.message);
-        return false;
-      })
-      .finally(() => {
-        connectPromise = null;
-      });
+    const currentClient = client;
 
-    return connectPromise;
+    let attempt;
+
+    attempt = (async () => {
+      try {
+        await currentClient.connect();
+
+        // Ignore a connection that completed after shutdown/replacement.
+        if (client !== currentClient) {
+          if (currentClient.isOpen) {
+            currentClient.destroy();
+          }
+
+          return false;
+        }
+
+        return currentClient.isReady === true;
+      } catch (error) {
+        logger.error("[Redis] Initial connection failed:", error.message);
+
+        return false;
+      } finally {
+        if (connectPromise === attempt) {
+          connectPromise = null;
+        }
+      }
+    })();
+
+    connectPromise = attempt;
+
+    return attempt;
   }
 
-  async function closeRedis() {
-    if (!client) {
-      return;
+  function closeRedis() {
+    if (closePromise) {
+      return closePromise;
     }
 
     const currentClient = client;
+    const pendingConnection = connectPromise;
+
     client = null;
     connectPromise = null;
 
-    try {
-      if (currentClient.isOpen && currentClient.isReady) {
-        await currentClient.close();
-      } else if (currentClient.isOpen) {
-        currentClient.destroy();
-      }
-    } catch (error) {
-      logger.error("[Redis] Error during shutdown:", error.message);
-
-      if (currentClient.isOpen) {
-        currentClient.destroy();
-      }
+    if (!currentClient) {
+      return Promise.resolve();
     }
+
+    closePromise = (async () => {
+      try {
+        if (pendingConnection) {
+          // Abort a connection attempt that has not settled yet.
+          currentClient.destroy();
+        } else if (currentClient.isOpen && currentClient.isReady) {
+          await currentClient.close();
+        } else if (currentClient.isOpen) {
+          currentClient.destroy();
+        }
+      } catch (error) {
+        logger.error("[Redis] Error during shutdown:", error.message);
+
+        if (currentClient.isOpen) {
+          currentClient.destroy();
+        }
+      }
+
+      if (pendingConnection) {
+        await pendingConnection.catch(() => false);
+      }
+    })().finally(() => {
+      closePromise = null;
+    });
+
+    return closePromise;
   }
 
   return {
     get client() {
       return client;
     },
+
     connectRedis,
     isRedisReady,
     closeRedis,
@@ -125,6 +169,7 @@ module.exports = {
   get client() {
     return redisManager.client;
   },
+
   connectRedis: redisManager.connectRedis,
   isRedisReady: redisManager.isRedisReady,
   closeRedis: redisManager.closeRedis,

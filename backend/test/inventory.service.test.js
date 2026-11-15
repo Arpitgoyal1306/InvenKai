@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const pool = require("../src/config/database");
 
 const {
+  createInventoryService,
   getInventoryByProductId,
   getLowStockProducts,
   decreaseStock,
@@ -372,4 +373,144 @@ test("getInventoryTransactions returns filtered paginated history", async () => 
   } finally {
     queryMock.mock.restore();
   }
+});
+
+
+
+test("publishes inventory update only after COMMIT", async () => {
+  const calls = [];
+  const events = [];
+
+  const client = {
+    query: async (sql) => {
+      calls.push(sql.trim());
+
+      if (sql.includes("SELECT product_id, quantity")) {
+        return {
+          rowCount: 1,
+          rows: [{ product_id: 1, quantity: 10 }],
+        };
+      }
+
+      if (sql.includes("UPDATE inventory")) {
+        return {
+          rowCount: 1,
+          rows: [{ product_id: 1, quantity: 15 }],
+        };
+      }
+
+      return { rowCount: 1, rows: [] };
+    },
+    release: () => {
+      calls.push("RELEASE");
+    },
+  };
+
+  const db = {
+    connect: async () => client,
+  };
+
+  const service = createInventoryService({
+    db,
+    publishInventoryUpdatedFn: async (event) => {
+      calls.push("PUBLISH");
+      events.push(event);
+    },
+  });
+
+  await service.increaseStock(1, 5, "1");
+
+  assert.ok(calls.indexOf("COMMIT") < calls.indexOf("PUBLISH"));
+  assert.ok(calls.indexOf("RELEASE") < calls.indexOf("PUBLISH"));
+
+  assert.deepEqual(events, [
+    {
+      productId: 1,
+      quantity: 15,
+    },
+  ]);
+});
+
+test("does not publish inventory update when transaction rolls back", async () => {
+  const calls = [];
+  let publishCount = 0;
+
+  const client = {
+    query: async (sql) => {
+      calls.push(sql.trim());
+
+      if (sql.includes("SELECT product_id, quantity")) {
+        return {
+          rowCount: 1,
+          rows: [{ product_id: 1, quantity: 10 }],
+        };
+      }
+
+      if (sql.includes("INSERT INTO inventory_transactions")) {
+        throw new Error("History insertion failed");
+      }
+
+      return { rowCount: 1, rows: [] };
+    },
+    release: () => {},
+  };
+
+  const service = createInventoryService({
+    db: {
+      connect: async () => client,
+    },
+    publishInventoryUpdatedFn: async () => {
+      publishCount++;
+    },
+  });
+
+  await assert.rejects(
+    service.increaseStock(1, 5, "1"),
+    /History insertion failed/,
+  );
+
+  assert.equal(calls.at(-1), "ROLLBACK");
+  assert.equal(publishCount, 0);
+});
+
+test("publisher failure does not fail a committed stock update", async () => {
+  const calls = [];
+
+  const client = {
+    query: async (sql) => {
+      calls.push(sql.trim());
+
+      if (sql.includes("SELECT product_id, quantity")) {
+        return {
+          rowCount: 1,
+          rows: [{ product_id: 1, quantity: 10 }],
+        };
+      }
+
+      if (sql.includes("UPDATE inventory")) {
+        return {
+          rowCount: 1,
+          rows: [{ product_id: 1, quantity: 15 }],
+        };
+      }
+
+      return { rowCount: 1, rows: [] };
+    },
+    release: () => {},
+  };
+
+  const service = createInventoryService({
+    db: {
+      connect: async () => client,
+    },
+    publishInventoryUpdatedFn: async () => {
+      throw new Error("Redis unavailable");
+    },
+  });
+
+  const result = await service.increaseStock(1, 5, "1");
+
+  assert.equal(result.quantity, 15);
+  assert.ok(calls.includes("COMMIT"));
+  assert.ok(!calls.includes("ROLLBACK"));
 });
