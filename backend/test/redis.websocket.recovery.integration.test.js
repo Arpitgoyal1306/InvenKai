@@ -14,15 +14,34 @@ const {
 } = require("../src/services/inventory-events.service");
 
 const HOST = "127.0.0.1";
-const PORT = 16379;
-const REDIS_URL = `redis://${HOST}:${PORT}`;
+
+async function getAvailablePort() {
+  const server = net.createServer();
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, HOST, resolve);
+  });
+
+  const { port } = server.address();
+
+  await new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+
+  return port;
+}
+
 const ORIGIN = "http://localhost:5173";
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForPort(redisProcess, timeoutMs = 5000) {
+async function waitForPort(redisProcess, port, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
@@ -35,7 +54,7 @@ async function waitForPort(redisProcess, timeoutMs = 5000) {
     const available = await new Promise((resolve) => {
       const socket = net.createConnection({
         host: HOST,
-        port: PORT,
+        port,
       });
 
       socket.once("connect", () => {
@@ -53,7 +72,7 @@ async function waitForPort(redisProcess, timeoutMs = 5000) {
     await delay(50);
   }
 
-  throw new Error(`Redis did not start on port ${PORT}`);
+  throw new Error(`Redis did not start on port ${port}`);
 }
 
 async function waitForWebSocketEvent(socket, timeoutMs = 5000) {
@@ -100,9 +119,11 @@ test(
     let socket;
 
     try {
+      const port = await getAvailablePort();
+      const redisUrl = `redis://${HOST}:${port}`;
       // Create the Redis manager while Redis is unavailable.
       manager = createRedisManager({
-        url: REDIS_URL,
+        url: redisUrl,
         logger: {
           info() {},
           warn() {},
@@ -128,7 +149,7 @@ test(
           "--bind",
           HOST,
           "--port",
-          String(PORT),
+          String(port),
           "--save",
           "",
           "--appendonly",
@@ -137,7 +158,7 @@ test(
         { stdio: "ignore" },
       );
 
-      await waitForPort(redisProcess);
+      await waitForPort(redisProcess, port);
 
       // The original publisher connection must recover.
       const connected = await connectionPromise;
