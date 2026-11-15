@@ -6,19 +6,37 @@ const net = require("node:net");
 const { createRedisManager } = require("../src/config/redis");
 
 const HOST = "127.0.0.1";
-const PORT = 16379;
-const REDIS_URL = `redis://${HOST}:${PORT}`;
+
+async function getAvailablePort() {
+  const server = net.createServer();
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, HOST, resolve);
+  });
+
+  const { port } = server.address();
+
+  await new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+
+  return port;
+}
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForPort({ timeoutMs = 5000 } = {}) {
+async function waitForPort(port, { timeoutMs = 5000 } = {}) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
     const available = await new Promise((resolve) => {
-      const socket = net.createConnection({ host: HOST, port: PORT });
+      const socket = net.createConnection({ host: HOST, port });
 
       socket.once("connect", () => {
         socket.destroy();
@@ -33,7 +51,7 @@ async function waitForPort({ timeoutMs = 5000 } = {}) {
     await delay(50);
   }
 
-  throw new Error(`Redis did not start on port ${PORT}`);
+  throw new Error(`Redis did not start on port ${port}`);
 }
 
 test("recovers the real Redis publisher after an initial outage", async () => {
@@ -42,8 +60,10 @@ test("recovers the real Redis publisher after an initial outage", async () => {
   let connectionPromise;
 
   try {
+    const port = await getAvailablePort();
+    const redisUrl = `redis://${HOST}:${port}`;
     manager = createRedisManager({
-      url: REDIS_URL,
+      url: redisUrl,
       logger: {
         info() {},
         warn() {},
@@ -65,7 +85,7 @@ test("recovers the real Redis publisher after an initial outage", async () => {
         "--bind",
         HOST,
         "--port",
-        String(PORT),
+        String(port),
         "--save",
         "",
         "--appendonly",
@@ -74,7 +94,7 @@ test("recovers the real Redis publisher after an initial outage", async () => {
       { stdio: "ignore" },
     );
 
-    await waitForPort();
+    await waitForPort(port);
 
     // The original connection attempt should recover.
     const connected = await Promise.race([
