@@ -462,7 +462,10 @@ function createScopedOutboxDb(orderIds, observedQueries = []) {
       if (sql.includes("WITH candidates AS")) {
         const scopedSql = sql.replace(
           "FROM order_outbox\n         WHERE",
-          "FROM order_outbox\n         WHERE order_id = ANY($4::bigint[]) AND",
+          "FROM order_outbox\n         WHERE order_id = ANY($4::bigint[]) AND (",
+        ).replace(
+          "           OR\n           (status = 'processing' AND locked_until < CURRENT_TIMESTAMP)\n         ORDER BY id",
+          "           OR\n           (status = 'processing' AND locked_until < CURRENT_TIMESTAMP)\n           )\n         ORDER BY id",
         );
         return testPool.query(scopedSql, [...params, orderIds]);
       }
