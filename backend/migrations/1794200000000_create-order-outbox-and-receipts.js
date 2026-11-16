@@ -23,6 +23,7 @@ export const up = (pgm) => {
       default: pgm.func("current_timestamp"),
     },
     locked_until: { type: "timestamptz" },
+    claim_token: { type: "uuid" },
     last_error: { type: "text" },
     dispatched_at: { type: "timestamptz" },
     created_at: {

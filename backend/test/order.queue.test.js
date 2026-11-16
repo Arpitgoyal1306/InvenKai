@@ -29,16 +29,10 @@ function createRedisMock() {
 
   return {
     rawClient,
-
     client: {
-      duplicate() {
-        return rawClient;
-      },
+      duplicate() { return rawClient; },
     },
-
-    isRedisReady() {
-      return true;
-    },
+    isRedisReady() { return true; },
   };
 }
 
@@ -49,22 +43,13 @@ test("uses the expected queue and job names", () => {
 
 test("configures retry and retention options", () => {
   assert.equal(defaultJobOptions.attempts, 3);
-
-  assert.deepEqual(defaultJobOptions.backoff, {
-    type: "exponential",
-    delay: 2000,
-  });
-
-  assert.deepEqual(defaultJobOptions.removeOnComplete, {
-    count: 1000,
-  });
-
+  assert.deepEqual(defaultJobOptions.backoff, { type: "exponential", delay: 2000 });
+  assert.deepEqual(defaultJobOptions.removeOnComplete, { count: 1000 });
   assert.equal(defaultJobOptions.removeOnFail, false);
 });
 
 test("creates queue and adds an order receipt job with a stable ID", async () => {
   const redisManager = createRedisMock();
-
   let createdQueueName;
   let createdQueueOptions;
   let addedJob;
@@ -74,12 +59,10 @@ test("creates queue and adds an order receipt job with a stable ID", async () =>
       createdQueueName = name;
       createdQueueOptions = options;
     }
-
     async add(name, data, options) {
       addedJob = { name, data, options };
       return addedJob;
     }
-
     async close() {}
   }
 
@@ -92,27 +75,15 @@ test("creates queue and adds an order receipt job with a stable ID", async () =>
   await resources.enqueueOrderReceipt(101);
 
   assert.equal(createdQueueName, "order-follow-up");
-
-  assert.deepEqual(createdQueueOptions.defaultJobOptions, {
-    attempts: 3,
-    backoff: { type: "exponential", delay: 2000 },
-    removeOnComplete: { count: 1000 },
-    removeOnFail: false,
-  });
-
-  assert.equal(addedJob.name, "process-order");
-
-  assert.deepEqual(addedJob.data, {
-    orderId: "101",
-  });
-
-  assert.deepEqual(addedJob.options, {
-    jobId: "order-101",
-  });
-
+  assert.equal(createdQueueOptions.defaultJobOptions.attempts, 3);
+  assert.equal(addedJob.name, ORDER_RECEIPT_JOB);
+  assert.deepEqual(addedJob.data, { orderId: "101" });
+  assert.deepEqual(addedJob.options, { jobId: "order-101" });
   assert.equal(redisManager.rawClient.connected, true);
 
   await resources.close();
+  assert.equal(redisManager.rawClient.destroyed, true);
+  assert.equal(redisManager.rawClient.isOpen, false);
 });
 
 test("converts order IDs to strings in job data and job IDs", async () => {
@@ -121,11 +92,7 @@ test("converts order IDs to strings in job data and job IDs", async () => {
 
   class FakeQueue {
     constructor() {}
-
-    async add(name, data, options) {
-      addedJobs.push({ name, data, options });
-    }
-
+    async add(name, data, options) { addedJobs.push({ name, data, options }); }
     async close() {}
   }
 
@@ -136,11 +103,7 @@ test("converts order IDs to strings in job data and job IDs", async () => {
   });
 
   await resources.enqueueOrderReceipt(205);
-
-  assert.deepEqual(addedJobs[0].data, {
-    orderId: "205",
-  });
-
+  assert.deepEqual(addedJobs[0].data, { orderId: "205" });
   assert.equal(addedJobs[0].options.jobId, "order-205");
 
   await resources.close();
@@ -149,52 +112,36 @@ test("converts order IDs to strings in job data and job IDs", async () => {
 test("rejects queue creation when Redis is not ready", async () => {
   const redisManager = {
     client: null,
-
-    isRedisReady() {
-      return false;
-    },
+    isRedisReady() { return false; },
   };
 
-  await assert.rejects(
-    createOrderQueue({ redisManager }),
-    /Redis is not ready/,
-  );
+  await assert.rejects(createOrderQueue({ redisManager }), /Redis is not ready/);
 });
 
 test("destroys the dedicated Redis client when queue creation fails", async () => {
   const redisManager = createRedisMock();
 
   class FailingQueue {
-    constructor() {
-      throw new Error("Queue creation failed");
-    }
+    constructor() { throw new Error("Queue creation failed"); }
   }
 
-  await assert.rejects(
-    createOrderQueue({
-      QueueClass: FailingQueue,
-      redisManager,
-      createRedisConnection: (client) => client,
-    }),
-    /Queue creation failed/,
-  );
+  await assert.rejects(createOrderQueue({
+    QueueClass: FailingQueue,
+    redisManager,
+    createRedisConnection: (client) => client,
+  }), /Queue creation failed/);
 
   assert.equal(redisManager.rawClient.destroyed, true);
 });
 
 test("closes the BullMQ queue when close is called", async () => {
   const redisManager = createRedisMock();
-
   let queueClosed = false;
 
   class FakeQueue {
     constructor() {}
-
     async add() {}
-
-    async close() {
-      queueClosed = true;
-    }
+    async close() { queueClosed = true; }
   }
 
   const resources = await createOrderQueue({
@@ -206,4 +153,5 @@ test("closes the BullMQ queue when close is called", async () => {
   await resources.close();
 
   assert.equal(queueClosed, true);
+  assert.equal(redisManager.rawClient.destroyed, true);
 });

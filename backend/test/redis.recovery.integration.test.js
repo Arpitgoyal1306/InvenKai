@@ -7,23 +7,27 @@ const { createRedisManager } = require("../src/config/redis");
 
 const HOST = "127.0.0.1";
 
+function getDockerSkipReason() {
+  try {
+    execFileSync("docker", ["info"], { stdio: "ignore", timeout: 5000 });
+    return false;
+  } catch {
+    return "Docker daemon is unavailable; run this recovery test on a Docker-enabled environment.";
+  }
+}
+
+const dockerSkipReason = getDockerSkipReason();
+
 async function getAvailablePort() {
   const server = net.createServer();
-
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, HOST, resolve);
   });
-
   const { port } = server.address();
-
   await new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error) reject(error);
-      else resolve();
-    });
+    server.close((error) => error ? reject(error) : resolve());
   });
-
   return port;
 }
 
@@ -37,24 +41,23 @@ async function waitForPort(port, { timeoutMs = 10000 } = {}) {
   while (Date.now() < deadline) {
     const available = await new Promise((resolve) => {
       const socket = net.createConnection({ host: HOST, port });
-
       socket.once("connect", () => {
         socket.destroy();
         resolve(true);
       });
-
       socket.once("error", () => resolve(false));
     });
 
     if (available) return;
-
     await delay(50);
   }
 
   throw new Error(`Redis did not start on port ${port}`);
 }
 
-test("recovers the real Redis publisher after an initial outage", async () => {
+test("recovers the real Redis publisher after an initial outage", {
+  skip: dockerSkipReason,
+}, async () => {
   let containerStarted = false;
   let manager;
   let connectionPromise;
@@ -63,46 +66,25 @@ test("recovers the real Redis publisher after an initial outage", async () => {
   try {
     const port = await getAvailablePort();
     const redisUrl = `redis://${HOST}:${port}`;
-
     containerName = `invenkai-redis-recovery-${process.pid}`;
 
     manager = createRedisManager({
       url: redisUrl,
-      logger: {
-        info() {},
-        warn() {},
-        error() {},
-      },
+      logger: { info() {}, warn() {}, error() {} },
     });
 
-    // Begin connecting while Redis is unavailable.
     connectionPromise = manager.connectRedis();
-
     await delay(150);
-
     assert.equal(manager.isRedisReady(), false);
 
-    // Start an isolated Redis server through Docker.
-    execFileSync(
-      "docker",
-      [
-        "run",
-        "-d",
-        "--rm",
-        "--name",
-        containerName,
-        "-p",
-        `${HOST}:${port}:6379`,
-        "redis:7-alpine",
-      ],
-      { stdio: "ignore" },
-    );
-
+    execFileSync("docker", [
+      "run", "-d", "--rm", "--name", containerName,
+      "-p", `${HOST}:${port}:6379`, "redis:7-alpine",
+    ], { stdio: "ignore" });
     containerStarted = true;
 
     await waitForPort(port);
 
-    // The original connection attempt should recover.
     const connected = await Promise.race([
       connectionPromise,
       delay(10000).then(() => {
@@ -114,15 +96,11 @@ test("recovers the real Redis publisher after an initial outage", async () => {
     assert.equal(manager.isRedisReady(), true);
     assert.equal(manager.client.isReady, true);
   } finally {
-    if (manager) {
-      await manager.closeRedis();
-    }
+    if (manager) await manager.closeRedis();
 
     if (containerStarted) {
       try {
-        execFileSync("docker", ["rm", "-f", containerName], {
-          stdio: "ignore",
-        });
+        execFileSync("docker", ["rm", "-f", containerName], { stdio: "ignore" });
       } catch (error) {
         console.error("[Test] Could not remove temporary Redis container:", error.message);
       }

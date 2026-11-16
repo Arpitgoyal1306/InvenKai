@@ -1,4 +1,3 @@
-
 const { Queue, createNodeRedisClient } = require("bullmq");
 const redis = require("../config/redis");
 
@@ -55,7 +54,20 @@ async function createOrderQueue({
     }
 
     async function close() {
-      await queue.close();
+      try {
+        // BullMQ Queue.close() closes the adapted connection.
+        await queue.close();
+      } finally {
+        // The duplicated node-redis client belongs to this queue. Close it
+        // explicitly only if the adapter left the underlying socket open.
+        if (rawClient.isOpen) {
+          if (rawClient.isReady && typeof rawClient.close === "function") {
+            await rawClient.close();
+          } else if (typeof rawClient.destroy === "function") {
+            rawClient.destroy();
+          }
+        }
+      }
     }
 
     return {
@@ -64,7 +76,9 @@ async function createOrderQueue({
       close,
     };
   } catch (error) {
-    rawClient.destroy();
+    if (rawClient.isOpen && typeof rawClient.destroy === "function") {
+      rawClient.destroy();
+    }
     throw error;
   }
 }

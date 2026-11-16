@@ -1,0 +1,214 @@
+require("dotenv").config();
+
+const { test, after } = require("node:test");
+const assert = require("node:assert/strict");
+const { randomUUID } = require("node:crypto");
+const { Pool } = require("pg");
+
+const { createOrder } = require("../src/services/order.service");
+const { createRedisManager } = require("../src/config/redis");
+const { createOrderOutboxDispatcher } = require("../src/services/order-outbox-dispatcher.service");
+const { createOrderQueue, ORDER_RECEIPT_JOB } = require("../src/queues/order.queue");
+const { startOrderWorker } = require("../src/workers/order.worker");
+const { createOrderReceiptProcessor } = require("../src/workers/order-receipt.processor");
+
+if (!process.env.TEST_DATABASE_URL) {
+  throw new Error("TEST_DATABASE_URL is required");
+}
+if (process.env.TEST_DATABASE_URL === process.env.DATABASE_URL) {
+  throw new Error("Test database must be different from DATABASE_URL");
+}
+
+const testPool = new Pool({
+  connectionString: process.env.TEST_DATABASE_URL,
+  max: 8,
+});
+
+after(async () => {
+  await testPool.end();
+});
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForJobState(queue, jobId, expectedState, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const job = await queue.getJob(jobId);
+    if (job) {
+      const state = await job.getState();
+      if (state === expectedState) return job;
+      if (state === "failed") {
+        throw new Error(`BullMQ job ${jobId} failed: ${job.failedReason}`);
+      }
+    }
+    await delay(100);
+  }
+
+  throw new Error(`BullMQ job ${jobId} did not reach ${expectedState}`);
+}
+
+async function waitForReceipt(orderId, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const result = await testPool.query(
+      "SELECT id FROM receipts WHERE order_id = $1",
+      [orderId],
+    );
+    if (result.rowCount === 1) return result.rows[0];
+    await delay(100);
+  }
+
+  throw new Error(`Receipt for order ${orderId} was not generated`);
+}
+
+async function createFixture() {
+  const suffix = randomUUID();
+  const category = await testPool.query(
+    "INSERT INTO categories (name) VALUES ($1) RETURNING id",
+    [`order-e2e-${suffix}`],
+  );
+  const user = await testPool.query(
+    `INSERT INTO users (name, email, password_hash, role)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
+    ["Order E2E Test", `order-e2e-${suffix}@example.test`, "test-password-hash", "customer"],
+  );
+  const product = await testPool.query(
+    `INSERT INTO products (category_id, name, sku, price)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
+    [category.rows[0].id, "Order E2E Product", `ORDER-E2E-${suffix}`, "25.00"],
+  );
+  await testPool.query(
+    "INSERT INTO inventory (product_id, quantity) VALUES ($1, $2)",
+    [product.rows[0].id, 4],
+  );
+
+  return {
+    categoryId: category.rows[0].id,
+    userId: user.rows[0].id,
+    productId: product.rows[0].id,
+  };
+}
+
+async function cleanupFixture(fixture) {
+  if (!fixture) return;
+
+  await testPool.query(
+    "DELETE FROM receipts WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+    [fixture.userId],
+  );
+  await testPool.query(
+    "DELETE FROM order_outbox WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)",
+    [fixture.userId],
+  );
+  await testPool.query("DELETE FROM inventory_transactions WHERE product_id = $1", [fixture.productId]);
+  await testPool.query("DELETE FROM orders WHERE user_id = $1", [fixture.userId]);
+  await testPool.query("DELETE FROM inventory WHERE product_id = $1", [fixture.productId]);
+  await testPool.query("DELETE FROM products WHERE id = $1", [fixture.productId]);
+  await testPool.query("DELETE FROM users WHERE id = $1", [fixture.userId]);
+  await testPool.query("DELETE FROM categories WHERE id = $1", [fixture.categoryId]);
+}
+
+test(
+  "committed order flows through PostgreSQL outbox, BullMQ, worker, and creates one receipt",
+  {
+    timeout: 60000,
+    skip: process.env.TEST_REDIS_URL
+      ? false
+      : "Set TEST_REDIS_URL to run the real Redis/BullMQ end-to-end test.",
+  },
+  async () => {
+    const dispatcherRedis = createRedisManager({
+      url: process.env.TEST_REDIS_URL,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    const workerRedis = createRedisManager({
+      url: process.env.TEST_REDIS_URL,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    const workerPool = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 3,
+    });
+
+    let fixture;
+    let dispatcher;
+    let workerResources;
+    let inspectionQueue;
+
+    try {
+      fixture = await createFixture();
+
+      workerResources = await startOrderWorker({
+        redisManager: workerRedis,
+        db: workerPool,
+        createReceiptProcessor: () => createOrderReceiptProcessor({ db: workerPool }),
+        logger: { info() {}, warn() {}, error() {} },
+        registerSignals: false,
+      });
+      await workerResources.worker.waitUntilReady();
+
+      dispatcher = createOrderOutboxDispatcher({
+        db: testPool,
+        redisManager: dispatcherRedis,
+        createQueue: () => createOrderQueue({ redisManager: dispatcherRedis }),
+      });
+
+      const order = await createOrder(
+        fixture.userId,
+        [{ productId: fixture.productId, quantity: 2 }],
+        testPool,
+        async () => {},
+      );
+
+      // Dispatch batches until this order's outbox row is confirmed published.
+      const deadline = Date.now() + 15000;
+      let outboxStatus = "pending";
+      while (Date.now() < deadline && outboxStatus !== "dispatched") {
+        await dispatcher.dispatchBatch();
+        const outbox = await testPool.query(
+          "SELECT status FROM order_outbox WHERE order_id = $1",
+          [order.id],
+        );
+        outboxStatus = outbox.rows[0]?.status;
+        if (outboxStatus !== "dispatched") await delay(100);
+      }
+      assert.equal(outboxStatus, "dispatched");
+
+      inspectionQueue = await createOrderQueue({ redisManager: dispatcherRedis });
+      await inspectionQueue.queue.waitUntilReady();
+      await waitForJobState(inspectionQueue.queue, `order-${order.id}`, "completed");
+
+      const receipt = await waitForReceipt(order.id);
+      assert.ok(receipt.id);
+
+      // Add a distinct job for the same order to exercise the processor twice.
+      const replayJob = await inspectionQueue.queue.add(
+        ORDER_RECEIPT_JOB,
+        { orderId: String(order.id) },
+        { jobId: `receipt-replay-${randomUUID()}`, attempts: 1 },
+      );
+      await waitForJobState(inspectionQueue.queue, replayJob.id, "completed");
+
+      const receipts = await testPool.query(
+        "SELECT id FROM receipts WHERE order_id = $1",
+        [order.id],
+      );
+      assert.equal(receipts.rowCount, 1, "replaying a job must not create a second receipt");
+    } finally {
+      if (inspectionQueue) await inspectionQueue.close().catch(() => {});
+      if (dispatcher) await dispatcher.close().catch(() => {});
+      if (workerResources) {
+        await workerResources.shutdown("integration test").catch(() => {});
+      } else {
+        await workerPool.end().catch(() => {});
+      }
+      await dispatcherRedis.closeRedis().catch(() => {});
+      await workerRedis.closeRedis().catch(() => {});
+      await cleanupFixture(fixture);
+    }
+  },
+);

@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { execFile } = require("node:child_process");
+const { execFile, execFileSync } = require("node:child_process");
 const { promisify } = require("node:util");
 const http = require("node:http");
 const net = require("node:net");
@@ -8,16 +8,23 @@ const { once } = require("node:events");
 const WebSocket = require("ws");
 
 const execFileAsync = promisify(execFile);
-
 const { createRedisManager } = require("../src/config/redis");
 const { createWebSocketService } = require("../src/services/websocket.service");
-
-const {
-  INVENTORY_CHANNEL,
-} = require("../src/services/inventory-events.service");
+const { INVENTORY_CHANNEL } = require("../src/services/inventory-events.service");
 
 const HOST = "127.0.0.1";
 const ORIGIN = "http://localhost:5173";
+
+function getDockerSkipReason() {
+  try {
+    execFileSync("docker", ["info"], { stdio: "ignore", timeout: 5000 });
+    return false;
+  } catch {
+    return "Docker daemon is unavailable; run this recovery test on a Docker-enabled environment.";
+  }
+}
+
+const dockerSkipReason = getDockerSkipReason();
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -25,62 +32,38 @@ function delay(ms) {
 
 async function getAvailablePort() {
   const server = net.createServer();
-
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, HOST, resolve);
   });
-
   const { port } = server.address();
-
   await new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error) reject(error);
-      else resolve();
-    });
+    server.close((error) => error ? reject(error) : resolve());
   });
-
   return port;
 }
 
 async function startRedisContainer(port) {
   const { stdout } = await execFileAsync("docker", [
-    "run",
-    "--rm",
-    "-d",
-    "-p",
-    `${HOST}:${port}:6379`,
-    "redis:7-alpine",
+    "run", "--rm", "-d", "-p", `${HOST}:${port}:6379`, "redis:7-alpine",
   ]);
-
   return stdout.trim();
 }
 
 async function waitForPort(port, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
-
   while (Date.now() < deadline) {
     const available = await new Promise((resolve) => {
-      const socket = net.createConnection({
-        host: HOST,
-        port,
-      });
-
+      const socket = net.createConnection({ host: HOST, port });
       socket.once("connect", () => {
         socket.destroy();
         resolve(true);
       });
-
       socket.once("error", () => resolve(false));
     });
-
-    if (available) {
-      return;
-    }
-
+    if (available) return;
     await delay(100);
   }
-
   throw new Error(`Redis container did not become ready on port ${port}`);
 }
 
@@ -99,7 +82,6 @@ async function waitForWebSocketEvent(socket, timeoutMs = 5000) {
 
     function handleMessage(message) {
       cleanup();
-
       try {
         resolve(JSON.parse(message.toString()));
       } catch (error) {
@@ -119,7 +101,7 @@ async function waitForWebSocketEvent(socket, timeoutMs = 5000) {
 
 test(
   "delivers inventory events after recovering from an initial Redis outage",
-  { timeout: 30000 },
+  { timeout: 30000, skip: dockerSkipReason },
   async () => {
     let containerId;
     let manager;
@@ -129,21 +111,12 @@ test(
 
     try {
       const port = await getAvailablePort();
-      const redisUrl = `redis://${HOST}:${port}`;
-
-      // Create the Redis manager while Redis is unavailable.
       manager = createRedisManager({
-        url: redisUrl,
-        logger: {
-          info() {},
-          warn() {},
-          error() {},
-        },
+        url: `redis://${HOST}:${port}`,
+        logger: { info() {}, warn() {}, error() {} },
       });
 
       const connectionPromise = manager.connectRedis();
-
-      // Confirm that the publisher has not connected yet.
       const connectedEarly = await Promise.race([
         connectionPromise.then(() => true),
         delay(150).then(() => false),
@@ -152,36 +125,20 @@ test(
       assert.equal(connectedEarly, false);
       assert.equal(manager.isRedisReady(), false);
 
-      // Start an isolated Redis container.
       containerId = await startRedisContainer(port);
-
       assert.ok(containerId);
-
       await waitForPort(port);
 
-      // The original publisher connection must recover.
       const connected = await connectionPromise;
-
       assert.equal(connected, true);
       assert.equal(manager.isRedisReady(), true);
 
       const publisher = manager.client;
-
-      // Attach the WebSocket service to a real HTTP server.
       service = createWebSocketService({
         getRedisClient: () => publisher,
-
-        consumeTicketFn: async (ticket) => {
-          if (ticket !== "integration-ticket") {
-            return null;
-          }
-
-          return {
-            userId: "42",
-            role: "inventory_manager",
-          };
-        },
-
+        consumeTicketFn: async (ticket) => ticket === "integration-ticket"
+          ? { userId: "42", role: "inventory_manager" }
+          : null,
         allowedOrigin: ORIGIN,
         retryBaseMs: 100,
         retryMaxMs: 800,
@@ -189,74 +146,36 @@ test(
 
       server = http.createServer();
       service.attach(server);
-
       server.listen(0, HOST);
       await once(server, "listening");
 
-      // Start the dedicated Redis subscriber.
       assert.equal(await service.startSubscriber(), true);
 
       const address = server.address();
-      const url = `ws://${HOST}:${address.port}/ws`;
-
-      // Connect an authorized WebSocket client.
-      socket = new WebSocket(`${url}?ticket=integration-ticket`, {
-        headers: {
-          Origin: ORIGIN,
-        },
+      socket = new WebSocket(`ws://${HOST}:${address.port}/ws?ticket=integration-ticket`, {
+        headers: { Origin: ORIGIN },
       });
-
       await once(socket, "open");
 
       const eventPromise = waitForWebSocketEvent(socket);
-
       const expectedEvent = {
         type: "inventory.updated",
-        data: {
-          productId: 987654,
-          quantity: 12,
-        },
+        data: { productId: 987654, quantity: 12 },
         timestamp: new Date().toISOString(),
       };
 
-      // Publish through the real Redis publisher.
-      await publisher.publish(
-        INVENTORY_CHANNEL,
-        JSON.stringify(expectedEvent),
-      );
-
-      // Verify delivery through the real WebSocket connection.
+      await publisher.publish(INVENTORY_CHANNEL, JSON.stringify(expectedEvent));
       const receivedEvent = await eventPromise;
-
       assert.deepEqual(receivedEvent, expectedEvent);
     } finally {
-      if (socket && socket.readyState !== WebSocket.CLOSED) {
-        socket.terminate();
-      }
+      if (socket && socket.readyState !== WebSocket.CLOSED) socket.terminate();
+      if (service) await service.close();
+      if (server?.listening) await new Promise((resolve) => server.close(resolve));
+      if (manager) await manager.closeRedis();
 
-      if (service) {
-        await service.close();
-      }
-
-      if (server?.listening) {
-        await new Promise((resolve) => server.close(resolve));
-      }
-
-      if (manager) {
-        await manager.closeRedis();
-      }
-
-      // Remove only the temporary container created by this test.
       if (containerId) {
-        await execFileAsync("docker", [
-          "rm",
-          "-f",
-          containerId,
-        ]).catch((error) => {
-          console.error(
-            "Could not remove temporary Redis container:",
-            error.message,
-          );
+        await execFileAsync("docker", ["rm", "-f", containerId]).catch((error) => {
+          console.error("Could not remove temporary Redis container:", error.message);
         });
       }
     }

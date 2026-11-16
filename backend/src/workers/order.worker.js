@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const { Worker, createNodeRedisClient } = require("bullmq");
@@ -14,6 +13,16 @@ const {
   createOrderReceiptProcessor,
 } = require("./order-receipt.processor");
 
+async function closeDedicatedRedisClient(rawClient) {
+  if (!rawClient || !rawClient.isOpen) return;
+
+  if (rawClient.isReady && typeof rawClient.close === "function") {
+    await rawClient.close();
+  } else if (typeof rawClient.destroy === "function") {
+    rawClient.destroy();
+  }
+}
+
 async function startOrderWorker({
   redisManager = redis,
   db = pool,
@@ -28,14 +37,12 @@ async function startOrderWorker({
   let closing = false;
 
   try {
-    // Connect the shared Redis manager.
     const connected = await redisManager.connectRedis();
 
     if (!connected || !redisManager.client) {
       throw new Error("Redis is unavailable");
     }
 
-    // Create a dedicated Redis connection for BullMQ.
     rawClient = redisManager.client.duplicate();
 
     rawClient.on("error", (error) => {
@@ -44,13 +51,9 @@ async function startOrderWorker({
 
     await rawClient.connect();
 
-    // Create BullMQ-compatible Redis connection.
     const connection = createRedisConnection(rawClient);
-
-    // Create receipt processor.
     const processReceipt = createReceiptProcessor();
 
-    // Start the BullMQ worker.
     worker = new WorkerClass(
       ORDER_QUEUE_NAME,
       async (job) => {
@@ -66,7 +69,6 @@ async function startOrderWorker({
       },
     );
 
-    // Worker event listeners.
     worker.on("completed", (job) => {
       logger.info(`[Order Worker] Job ${job.id} completed.`);
     });
@@ -82,12 +84,10 @@ async function startOrderWorker({
       logger.error("[Order Worker] Error:", error.message);
     });
 
-    // Graceful shutdown.
     async function shutdown(signal = "shutdown") {
       if (closing) return;
 
       closing = true;
-
       logger.info(`[Order Worker] ${signal}; closing...`);
 
       try {
@@ -96,14 +96,17 @@ async function startOrderWorker({
         }
       } finally {
         try {
-          await redisManager.closeRedis();
+          await closeDedicatedRedisClient(rawClient);
         } finally {
-          await db.end();
+          try {
+            await redisManager.closeRedis();
+          } finally {
+            await db.end();
+          }
         }
       }
     }
 
-    // Register shutdown handlers.
     if (registerSignals) {
       process.once("SIGINT", () => {
         void shutdown("SIGINT").catch((error) => logger.error(error));
@@ -121,12 +124,10 @@ async function startOrderWorker({
       shutdown,
     };
   } catch (error) {
-    // Clean up the dedicated Redis connection if startup fails.
-    if (rawClient) {
+    if (rawClient && rawClient.isOpen && typeof rawClient.destroy === "function") {
       rawClient.destroy();
     }
 
-    // Clean up the shared Redis connection if startup fails.
     try {
       await redisManager.closeRedis();
     } catch (cleanupError) {
@@ -140,7 +141,6 @@ async function startOrderWorker({
   }
 }
 
-// Start worker when executed directly.
 if (require.main === module) {
   startOrderWorker().catch(async (error) => {
     console.error("[Order Worker] Startup failed:", error.message);
