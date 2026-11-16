@@ -29,6 +29,10 @@ function createMocks({
         return { rows: events };
       }
 
+      if (sql.includes("SET locked_until = CURRENT_TIMESTAMP")) {
+        return { rows: (params?.[2] || []).map((id) => ({ id })) };
+      }
+
       if (sql.includes("SET status = 'dispatched'")) {
         markDispatchedCalls += 1;
 
@@ -218,6 +222,10 @@ test("does not overwrite an outbox lease reclaimed during a slow enqueue", async
         };
       }
 
+      if (sql.includes("SET locked_until = CURRENT_TIMESTAMP")) {
+        return { rows: (params?.[2] || []).map((id) => ({ id })) };
+      }
+
       if (sql.includes("SET status = 'dispatched'")) {
         assert.notEqual(params[1], "99999999-9999-4999-8999-999999999999");
         return { rowCount: 0, rows: [] };
@@ -271,7 +279,7 @@ test("continues dispatching the batch when one event cannot be released for retr
   let queueCreateCalls = 0;
 
   const db = {
-    async query(sql) {
+    async query(sql, params) {
       queries.push(sql);
 
       if (sql.includes("WITH candidates AS")) {
@@ -286,6 +294,10 @@ test("continues dispatching the batch when one event cannot be released for retr
       if (sql.includes("SET status = 'pending'")) {
         releaseCalls += 1;
         throw new Error("PostgreSQL temporarily unavailable");
+      }
+
+      if (sql.includes("SET locked_until = CURRENT_TIMESTAMP")) {
+        return { rows: (params?.[2] || []).map((id) => ({ id })) };
       }
 
       if (sql.includes("SET status = 'dispatched'")) {
