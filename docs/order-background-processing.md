@@ -146,11 +146,26 @@ pool. The API checkout path does not contact Redis.
 
 On SIGTERM/SIGINT, the dispatcher stops polling and does not begin the remaining
 items in an already claimed batch. An in-flight enqueue is bounded by a
-five-second timeout. The process waits up to its configured shutdown grace
-period, closes the queue with a bounded wait, then closes Redis and PostgreSQL
-using nested `finally` blocks. Rows claimed but not dispatched remain
-`processing`; after the 60-second lease expires, another dispatcher can
-reclaim them. Claim-token checks prevent a stale dispatcher from modifying
+five-second timeout. The process waits up to 12 seconds for the active poll,
+then closes the queue (4-second deadline), Redis (2-second deadline), and
+PostgreSQL (3-second deadline), in that order. The Redis and PostgreSQL close
+operations are independently bounded and live in nested `finally` blocks:
+a rejection or timeout from one never prevents the next cleanup attempt.
+
+If the active poll or any close operation fails or reaches its deadline, the
+dispatcher logs the specific failure, attempts every remaining cleanup step
+exactly once, and then exits non-zero. It does not report graceful shutdown
+when cleanup is incomplete. The total shutdown wait is bounded by the active
+poll grace period plus the queue, Redis, and PostgreSQL close deadlines
+(approximately 21 seconds with production defaults). The process supervisor
+should restart the dispatcher after this forced exit.
+
+Rows claimed but not dispatched remain `processing`; after the 60-second
+lease expires, another dispatcher can reclaim them. The dispatcher checks
+its stopping flag before starting each event, so it does not begin the
+remaining claimed batch during shutdown. If the active poll cannot settle
+within the grace period, process termination is the final boundary for any
+in-flight work. Claim-token checks prevent a stale dispatcher from modifying
 the new owner's claim. A job accepted by Redis just before shutdown is safe
 to publish again because its job ID is stable and receipt persistence is
 idempotent.
