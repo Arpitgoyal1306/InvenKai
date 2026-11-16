@@ -586,7 +586,7 @@ test(
           isRedisReady() { return true; },
           async connectRedis() { return true; },
         },
-        batchSize: 4,
+        batchSize: 25,
         leaseSeconds: 60,
         enqueueTimeoutMs: 30000,
         logger: { info() {}, warn() {}, error() {} },
