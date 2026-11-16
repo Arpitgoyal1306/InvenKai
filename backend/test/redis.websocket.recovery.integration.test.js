@@ -1,10 +1,13 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { spawn } = require("node:child_process");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
 const http = require("node:http");
 const net = require("node:net");
 const { once } = require("node:events");
 const WebSocket = require("ws");
+
+const execFileAsync = promisify(execFile);
 
 const { createRedisManager } = require("../src/config/redis");
 const { createWebSocketService } = require("../src/services/websocket.service");
@@ -14,6 +17,11 @@ const {
 } = require("../src/services/inventory-events.service");
 
 const HOST = "127.0.0.1";
+const ORIGIN = "http://localhost:5173";
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function getAvailablePort() {
   const server = net.createServer();
@@ -35,22 +43,23 @@ async function getAvailablePort() {
   return port;
 }
 
-const ORIGIN = "http://localhost:5173";
+async function startRedisContainer(port) {
+  const { stdout } = await execFileAsync("docker", [
+    "run",
+    "--rm",
+    "-d",
+    "-p",
+    `${HOST}:${port}:6379`,
+    "redis:7-alpine",
+  ]);
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return stdout.trim();
 }
 
-async function waitForPort(redisProcess, port, timeoutMs = 5000) {
+async function waitForPort(port, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    if (redisProcess.exitCode !== null) {
-      throw new Error(
-        `Redis process exited with code ${redisProcess.exitCode}`,
-      );
-    }
-
     const available = await new Promise((resolve) => {
       const socket = net.createConnection({
         host: HOST,
@@ -69,10 +78,10 @@ async function waitForPort(redisProcess, port, timeoutMs = 5000) {
       return;
     }
 
-    await delay(50);
+    await delay(100);
   }
 
-  throw new Error(`Redis did not start on port ${port}`);
+  throw new Error(`Redis container did not become ready on port ${port}`);
 }
 
 async function waitForWebSocketEvent(socket, timeoutMs = 5000) {
@@ -110,9 +119,9 @@ async function waitForWebSocketEvent(socket, timeoutMs = 5000) {
 
 test(
   "delivers inventory events after recovering from an initial Redis outage",
-  { timeout: 20000 },
+  { timeout: 30000 },
   async () => {
-    let redisProcess;
+    let containerId;
     let manager;
     let service;
     let server;
@@ -121,6 +130,7 @@ test(
     try {
       const port = await getAvailablePort();
       const redisUrl = `redis://${HOST}:${port}`;
+
       // Create the Redis manager while Redis is unavailable.
       manager = createRedisManager({
         url: redisUrl,
@@ -142,23 +152,12 @@ test(
       assert.equal(connectedEarly, false);
       assert.equal(manager.isRedisReady(), false);
 
-      // Start an isolated Redis process.
-      redisProcess = spawn(
-        "redis-server",
-        [
-          "--bind",
-          HOST,
-          "--port",
-          String(port),
-          "--save",
-          "",
-          "--appendonly",
-          "no",
-        ],
-        { stdio: "ignore" },
-      );
+      // Start an isolated Redis container.
+      containerId = await startRedisContainer(port);
 
-      await waitForPort(redisProcess, port);
+      assert.ok(containerId);
+
+      await waitForPort(port);
 
       // The original publisher connection must recover.
       const connected = await connectionPromise;
@@ -221,7 +220,10 @@ test(
       };
 
       // Publish through the real Redis publisher.
-      await publisher.publish(INVENTORY_CHANNEL, JSON.stringify(expectedEvent));
+      await publisher.publish(
+        INVENTORY_CHANNEL,
+        JSON.stringify(expectedEvent),
+      );
 
       // Verify delivery through the real WebSocket connection.
       const receivedEvent = await eventPromise;
@@ -244,10 +246,18 @@ test(
         await manager.closeRedis();
       }
 
-      if (redisProcess && redisProcess.exitCode === null) {
-        redisProcess.kill("SIGTERM");
-
-        await Promise.race([once(redisProcess, "exit"), delay(3000)]);
+      // Remove only the temporary container created by this test.
+      if (containerId) {
+        await execFileAsync("docker", [
+          "rm",
+          "-f",
+          containerId,
+        ]).catch((error) => {
+          console.error(
+            "Could not remove temporary Redis container:",
+            error.message,
+          );
+        });
       }
     }
   },

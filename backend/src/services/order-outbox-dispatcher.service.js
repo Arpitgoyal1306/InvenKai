@@ -1,14 +1,30 @@
 const pool = require("../config/database");
 const { createOrderQueue } = require("../queues/order.queue");
+const redis = require("../config/redis");
 
 const BATCH_SIZE = 25;
 const LEASE_SECONDS = 60;
 
-function createOrderOutboxDispatcher({ db = pool, createQueue = createOrderQueue } = {}) {
+function createOrderOutboxDispatcher({
+  db = pool,
+  createQueue = createOrderQueue,
+  redisManager = redis,
+} = {}) {
   let queueResources = null;
 
   async function ensureQueue() {
-    if (!queueResources) queueResources = await createQueue();
+    if (!redisManager.isRedisReady()) {
+      const connected = await redisManager.connectRedis();
+
+      if (!connected) {
+        throw new Error("Redis is unavailable. Outbox event will be retried.");
+      }
+    }
+
+    if (!queueResources) {
+      queueResources = await createQueue();
+    }
+
     return queueResources;
   }
 

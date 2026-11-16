@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { spawn } = require("node:child_process");
+const { execFileSync } = require("node:child_process");
 const net = require("node:net");
 
 const { createRedisManager } = require("../src/config/redis");
@@ -31,7 +31,7 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForPort(port, { timeoutMs = 5000 } = {}) {
+async function waitForPort(port, { timeoutMs = 10000 } = {}) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
@@ -55,13 +55,17 @@ async function waitForPort(port, { timeoutMs = 5000 } = {}) {
 }
 
 test("recovers the real Redis publisher after an initial outage", async () => {
-  let redisProcess;
+  let containerStarted = false;
   let manager;
   let connectionPromise;
+  let containerName;
 
   try {
     const port = await getAvailablePort();
     const redisUrl = `redis://${HOST}:${port}`;
+
+    containerName = `invenkai-redis-recovery-${process.pid}`;
+
     manager = createRedisManager({
       url: redisUrl,
       logger: {
@@ -78,21 +82,23 @@ test("recovers the real Redis publisher after an initial outage", async () => {
 
     assert.equal(manager.isRedisReady(), false);
 
-    // Start an isolated Redis server.
-    redisProcess = spawn(
-      "redis-server",
+    // Start an isolated Redis server through Docker.
+    execFileSync(
+      "docker",
       [
-        "--bind",
-        HOST,
-        "--port",
-        String(port),
-        "--save",
-        "",
-        "--appendonly",
-        "no",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        containerName,
+        "-p",
+        `${HOST}:${port}:6379`,
+        "redis:7-alpine",
       ],
       { stdio: "ignore" },
     );
+
+    containerStarted = true;
 
     await waitForPort(port);
 
@@ -112,13 +118,14 @@ test("recovers the real Redis publisher after an initial outage", async () => {
       await manager.closeRedis();
     }
 
-    if (redisProcess && redisProcess.exitCode === null) {
-      redisProcess.kill("SIGTERM");
-
-      await Promise.race([
-        new Promise((resolve) => redisProcess.once("exit", resolve)),
-        delay(3000),
-      ]);
+    if (containerStarted) {
+      try {
+        execFileSync("docker", ["rm", "-f", containerName], {
+          stdio: "ignore",
+        });
+      } catch (error) {
+        console.error("[Test] Could not remove temporary Redis container:", error.message);
+      }
     }
   }
 });
