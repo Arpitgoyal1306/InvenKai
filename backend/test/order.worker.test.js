@@ -61,6 +61,7 @@ function createMocks({
     destroy() {
       calls.push("sharedRedis.destroy");
       this.isOpen = false;
+      this.isReady = false;
     },
   };
 
@@ -441,6 +442,7 @@ test("bounds a shared Redis connect that never settles and closes shared Redis a
   assert.equal(mocks.calls.filter((call) => call === "dedicatedRedis.connect").length, 0);
   assert.equal(mocks.calls.includes("worker.created"), false);
   assert.equal(cleanupCounts(mocks.calls).sharedClose, 1);
+  assert.equal(cleanupCounts(mocks.calls).sharedDestroy, 1);
   assert.equal(cleanupCounts(mocks.calls).databaseEnd, 1);
   assert.equal(cleanupCounts(mocks.calls).processExit, 0);
   assert.equal(mocks.sharedClient.isOpen, false);
@@ -518,6 +520,11 @@ test("SIGTERM during dedicated Redis startup prevents Worker construction and sh
   const dedicatedConnectStarted = deferred();
 
   const mocks = createMocks({
+    sharedRedisConnect: () => {
+      assert.equal(signalSource.listenerCount("SIGTERM"), 1,
+        "SIGTERM must be registered before the first Redis connection starts");
+      return Promise.resolve(true);
+    },
     dedicatedRedisConnect: () => {
       dedicatedConnectStarted.resolve();
       return new Promise(() => {});
@@ -578,6 +585,7 @@ test("a late shared Redis success after shutdown cannot leave a shared socket op
 
   assert.equal(mocks.calls.includes("worker.created"), false);
   assert.equal(cleanupCounts(mocks.calls).sharedClose, 1);
+  assert.equal(cleanupCounts(mocks.calls).sharedDestroy, 1);
   assert.equal(cleanupCounts(mocks.calls).databaseEnd, 1);
 
   await new Promise((resolve) => setTimeout(resolve, 80));
