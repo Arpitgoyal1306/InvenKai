@@ -7,10 +7,6 @@ const { createOrderOutboxDispatcher } = require("../services/order-outbox-dispat
 const POLL_INTERVAL_MS = 2000;
 
 async function startDispatcher() {
-  const redisConnected = await redis.connectRedis();
-  if (!redisConnected) {
-    console.warn("[Outbox Dispatcher] Redis is unavailable; pending events will remain in PostgreSQL until it recovers.");
-  }
   const dispatcher = createOrderOutboxDispatcher();
   let stopping = false;
   let timer = null;

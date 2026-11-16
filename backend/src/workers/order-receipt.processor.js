@@ -3,7 +3,7 @@ const pool = require("../config/database");
 function createOrderReceiptProcessor({ db = pool } = {}) {
   return async function processOrderReceipt(job) {
     const orderId = job.data?.orderId;
-    if (!orderId || !/^[1-9]\\d*$/.test(String(orderId))) {
+    if (!orderId || !/^[1-9]\d*$/.test(String(orderId))) {
       throw new Error("Order receipt job requires a valid orderId");
     }
 
