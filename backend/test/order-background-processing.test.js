@@ -201,6 +201,7 @@ function createDispatcherMocks({ redisReady = true, enqueueError = null } = {}) 
       order_id: "101",
       payload: { orderId: "101" },
       attempts: 1,
+      claim_token: "11111111-1111-4111-8111-111111111111",
     },
   ];
 
@@ -216,6 +217,10 @@ function createDispatcherMocks({ redisReady = true, enqueueError = null } = {}) 
 
       if (sql.includes("WITH candidates AS")) {
         return { rows: events };
+      }
+
+      if (sql.includes("SET locked_until = CURRENT_TIMESTAMP")) {
+        return { rows: (params?.[2] || []).map((id) => ({ id })) };
       }
 
       if (sql.includes("SET status = 'dispatched'")) {
