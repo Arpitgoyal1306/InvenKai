@@ -25,6 +25,7 @@ function createMocks({
   dedicatedRedisConnect,
 } = {}) {
   const calls = [];
+  let sharedConnectPending = false;
 
   const rawClient = {
     isOpen: false,
@@ -65,17 +66,29 @@ function createMocks({
 
   const redisManager = {
     get client() { return sharedClient; },
-    async connectRedis() {
+    connectRedis() {
       calls.push("sharedRedis.connect");
-      if (sharedRedisConnect) return sharedRedisConnect(sharedClient);
-      if (!redisAvailable) return false;
+      if (sharedRedisConnect) {
+        sharedConnectPending = true;
+        const result = Promise.resolve().then(() => sharedRedisConnect(sharedClient));
+        result.then(
+          () => { sharedConnectPending = false; },
+          () => { sharedConnectPending = false; },
+        );
+        return result;
+      }
+      if (!redisAvailable) return Promise.resolve(false);
       sharedClient.isOpen = true;
       sharedClient.isReady = true;
-      return true;
+      return Promise.resolve(true);
     },
     async closeRedis() {
       calls.push("sharedRedis.close");
       if (sharedRedisClose) return sharedRedisClose(sharedClient);
+      if (sharedConnectPending) {
+        sharedClient.destroy();
+        return;
+      }
       if (!sharedClient.isOpen && !sharedClient.isReady) return;
       sharedClient.isOpen = false;
       sharedClient.isReady = false;
