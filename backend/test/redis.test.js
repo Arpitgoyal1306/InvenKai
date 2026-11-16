@@ -288,3 +288,32 @@ test("destroys a pending Redis connection during shutdown", async () => {
   assert.equal(manager.client, null);
   assert.equal(manager.isRedisReady(), false);
 });
+
+
+test("does not wait indefinitely for a pending Redis connection during shutdown", async () => {
+  const mockClient = createMockClient();
+
+  mockClient.connect = () => {
+    mockClient.connectCalls++;
+    mockClient.isOpen = true;
+    mockClient.isReady = false;
+    return new Promise(() => {});
+  };
+
+  const manager = createRedisManager({
+    url: "redis://localhost:6379",
+    createClientFn: () => mockClient,
+    logger: createLogger(),
+  });
+
+  manager.connectRedis();
+
+  assert.equal(mockClient.isOpen, true);
+
+  await manager.closeRedis();
+
+  assert.equal(mockClient.destroyCalls, 1);
+  assert.equal(mockClient.closeCalls, 0);
+  assert.equal(manager.client, null);
+  assert.equal(manager.isRedisReady(), false);
+});

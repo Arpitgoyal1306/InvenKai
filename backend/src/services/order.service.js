@@ -1,5 +1,6 @@
 const pool = require("../config/database");
 const { publishInventoryUpdated } = require("./inventory-events.service");
+const { addOrderReceiptEvent } = require("./order-outbox.service");
 
 const MAX_STOCK = 2147483647;
 const MAX_BIGINT = 9223372036854775807n;
@@ -399,7 +400,11 @@ async function createOrder(
       [order.id],
     );
 
-    // Commit the complete order and all inventory deductions.
+    // Store the follow-up intention in the same transaction as the order.
+    // Redis is not contacted here, so checkout never depends on Redis.
+    await addOrderReceiptEvent(client, order.id);
+
+    // Commit the complete order, inventory deductions, and outbox event.
     await client.query("COMMIT");
 
     orderResponse = {

@@ -142,9 +142,11 @@ function createRedisManager({
         }
       }
 
-      if (pendingConnection) {
-        await pendingConnection.catch(() => false);
-      }
+      // Do not await the original connect promise here. With automatic
+      // reconnection enabled, some failed initial connections can remain
+      // pending even after destroy() has closed the socket. Waiting for that
+      // promise would make shutdown hang. The connection attempt handles its
+      // own eventual rejection and cannot replace this closed client.
     })().finally(() => {
       closePromise = null;
     });
