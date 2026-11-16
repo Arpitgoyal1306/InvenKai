@@ -21,6 +21,8 @@ function createMocks({
   dedicatedRedisClose,
   sharedRedisClose,
   databaseEnd,
+  sharedRedisConnect,
+  dedicatedRedisConnect,
 } = {}) {
   const calls = [];
 
@@ -30,6 +32,7 @@ function createMocks({
     on() {},
     async connect() {
       calls.push("dedicatedRedis.connect");
+      if (dedicatedRedisConnect) return dedicatedRedisConnect(this);
       if (!redisAvailable) throw new Error("Redis connection failed");
       this.isOpen = true;
       this.isReady = true;
@@ -49,6 +52,7 @@ function createMocks({
 
   const sharedClient = {
     isOpen: true,
+    isReady: true,
     duplicate() {
       calls.push("dedicatedRedis.duplicate");
       return rawClient;
@@ -63,12 +67,18 @@ function createMocks({
     get client() { return sharedClient; },
     async connectRedis() {
       calls.push("sharedRedis.connect");
-      return redisAvailable;
+      if (sharedRedisConnect) return sharedRedisConnect(sharedClient);
+      if (!redisAvailable) return false;
+      sharedClient.isOpen = true;
+      sharedClient.isReady = true;
+      return true;
     },
     async closeRedis() {
       calls.push("sharedRedis.close");
       if (sharedRedisClose) return sharedRedisClose(sharedClient);
+      if (!sharedClient.isOpen && !sharedClient.isReady) return;
       sharedClient.isOpen = false;
+      sharedClient.isReady = false;
     },
   };
 
@@ -395,4 +405,171 @@ test("a timed-out PostgreSQL pool close triggers the hard termination strategy",
 
 test("exports the documented graceful shutdown deadline", () => {
   assert.equal(GRACEFUL_SHUTDOWN_MS, 20000);
+});
+
+
+test("bounds a shared Redis connect that never settles and closes shared Redis and PostgreSQL once", async () => {
+  const mocks = createMocks({
+    sharedRedisConnect: () => new Promise(() => {}),
+  });
+
+  await assert.rejects(
+    startOrderWorker({
+      ...mocks.dependencies,
+      sharedRedisConnectTimeoutMs: 20,
+      dedicatedRedisConnectTimeoutMs: 20,
+      sharedRedisCloseTimeoutMs: 20,
+      databaseCloseTimeoutMs: 20,
+    }),
+    /Timed out connecting the shared Redis client/,
+  );
+
+  assert.equal(mocks.calls.filter((call) => call === "sharedRedis.connect").length, 1);
+  assert.equal(mocks.calls.filter((call) => call === "dedicatedRedis.connect").length, 0);
+  assert.equal(mocks.calls.includes("worker.created"), false);
+  assert.equal(cleanupCounts(mocks.calls).sharedClose, 1);
+  assert.equal(cleanupCounts(mocks.calls).databaseEnd, 1);
+  assert.equal(cleanupCounts(mocks.calls).processExit, 0);
+  assert.equal(mocks.sharedClient.isOpen, false);
+  assert.equal(mocks.sharedClient.isReady, false);
+});
+
+test("bounds a dedicated Redis connect that never settles and cleans all startup resources once", async () => {
+  const mocks = createMocks({
+    dedicatedRedisConnect: () => new Promise(() => {}),
+  });
+
+  await assert.rejects(
+    startOrderWorker({
+      ...mocks.dependencies,
+      dedicatedRedisConnectTimeoutMs: 20,
+      dedicatedRedisCloseTimeoutMs: 20,
+      sharedRedisCloseTimeoutMs: 20,
+      databaseCloseTimeoutMs: 20,
+    }),
+    /Timed out connecting the dedicated worker Redis client/,
+  );
+
+  const counts = cleanupCounts(mocks.calls);
+  assert.equal(counts.dedicatedDestroy, 1);
+  assert.equal(counts.sharedClose, 1);
+  assert.equal(counts.databaseEnd, 1);
+  assert.equal(counts.processExit, 0);
+  assert.equal(mocks.calls.includes("worker.created"), false);
+  assert.equal(mocks.rawClient.isOpen, false);
+  assert.equal(mocks.sharedClient.isOpen, false);
+  assert.equal(mocks.sharedClient.isReady, false);
+});
+
+test("destroys a dedicated Redis socket that resolves and opens after its startup timeout", async () => {
+  let connectFinished = false;
+  const mocks = createMocks({
+    dedicatedRedisConnect: (client) => new Promise((resolve) => {
+      setTimeout(() => {
+        connectFinished = true;
+        // Simulate a late successful connect that opens after destroy().
+        client.isOpen = true;
+        client.isReady = true;
+        resolve();
+      }, 60);
+    }),
+  });
+
+  await assert.rejects(
+    startOrderWorker({
+      ...mocks.dependencies,
+      dedicatedRedisConnectTimeoutMs: 15,
+      dedicatedRedisCloseTimeoutMs: 20,
+      sharedRedisCloseTimeoutMs: 20,
+      databaseCloseTimeoutMs: 20,
+    }),
+    /Timed out connecting the dedicated worker Redis client/,
+  );
+
+  assert.equal(mocks.calls.includes("worker.created"), false);
+  assert.equal(cleanupCounts(mocks.calls).sharedClose, 1);
+  assert.equal(cleanupCounts(mocks.calls).databaseEnd, 1);
+  assert.equal(cleanupCounts(mocks.calls).dedicatedDestroy, 1);
+
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  assert.equal(connectFinished, true);
+  assert.equal(cleanupCounts(mocks.calls).dedicatedDestroy, 2);
+  assert.equal(mocks.rawClient.isOpen, false);
+  assert.equal(mocks.rawClient.isReady, false);
+});
+
+test("SIGTERM during dedicated Redis startup prevents Worker construction and shares cleanup", async () => {
+  const { EventEmitter } = require("node:events");
+  const signalSource = new EventEmitter();
+  const dedicatedConnectStarted = deferred();
+
+  const mocks = createMocks({
+    dedicatedRedisConnect: () => {
+      dedicatedConnectStarted.resolve();
+      return new Promise(() => {});
+    },
+  });
+
+  const startup = startOrderWorker({
+    ...mocks.dependencies,
+    signalSource,
+    registerSignals: true,
+    dedicatedRedisConnectTimeoutMs: 100,
+    dedicatedRedisCloseTimeoutMs: 20,
+    sharedRedisCloseTimeoutMs: 20,
+    databaseCloseTimeoutMs: 20,
+  });
+
+  await dedicatedConnectStarted.promise;
+  assert.equal(signalSource.listenerCount("SIGTERM"), 1);
+
+  signalSource.emit("SIGTERM");
+
+  await assert.rejects(startup, /startup was interrupted by shutdown|Timed out connecting/);
+
+  assert.equal(mocks.calls.includes("worker.created"), false);
+  assert.equal(cleanupCounts(mocks.calls).dedicatedDestroy, 1);
+  assert.equal(cleanupCounts(mocks.calls).sharedClose, 1);
+  assert.equal(cleanupCounts(mocks.calls).databaseEnd, 1);
+  assert.equal(cleanupCounts(mocks.calls).processExit, 0);
+  assert.equal(signalSource.listenerCount("SIGTERM"), 0);
+  assert.equal(signalSource.listenerCount("SIGINT"), 0);
+  assert.equal(mocks.rawClient.isOpen, false);
+  assert.equal(mocks.sharedClient.isOpen, false);
+  assert.equal(mocks.sharedClient.isReady, false);
+});
+
+test("a late shared Redis success after shutdown cannot leave a shared socket open", async () => {
+  let connectFinished = false;
+  const mocks = createMocks({
+    sharedRedisConnect: (client) => new Promise((resolve) => {
+      setTimeout(() => {
+        connectFinished = true;
+        client.isOpen = true;
+        client.isReady = true;
+        resolve(true);
+      }, 60);
+    }),
+  });
+
+  await assert.rejects(
+    startOrderWorker({
+      ...mocks.dependencies,
+      sharedRedisConnectTimeoutMs: 15,
+      sharedRedisCloseTimeoutMs: 20,
+      databaseCloseTimeoutMs: 20,
+    }),
+    /Timed out connecting the shared Redis client/,
+  );
+
+  assert.equal(mocks.calls.includes("worker.created"), false);
+  assert.equal(cleanupCounts(mocks.calls).sharedClose, 1);
+  assert.equal(cleanupCounts(mocks.calls).databaseEnd, 1);
+
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  assert.equal(connectFinished, true);
+  assert.equal(mocks.sharedClient.isOpen, false);
+  assert.equal(mocks.sharedClient.isReady, false);
 });
