@@ -37,11 +37,26 @@ stale dispatcher changing a new owner's row.
 
 This heartbeat makes total batch duration independent of the 60-second lease:
 a batch can take longer than 60 seconds as long as the dispatcher can renew
-its remaining claims. The heartbeat interval should remain comfortably below
-the lease duration; it defaults to 20 seconds and can be configured through
-`leaseRenewalIntervalMs` when constructing the dispatcher. A duplicate
-enqueue can still occur if an enqueue succeeds just as its claim is lost, so
-the deterministic BullMQ job ID and idempotent receipt remain important.
+its remaining claims. The production batch limit is 25 rows; the 20-second
+heartbeat renews the outstanding rows as those events are processed
+sequentially, rather than requiring the entire 25-row batch to finish inside
+one lease window.
+
+The heartbeat interval should remain comfortably below the lease duration; it
+defaults to 20 seconds for the 60-second lease and can be configured through
+`leaseRenewalIntervalMs` when constructing the dispatcher. With the current
+5-second bounds for queue setup, enqueue, mark-dispatched, and retry release,
+plus a 4-second queue-close bound, the conservative single-event failure path
+is approximately 24 seconds. The default 60-second lease leaves margin for
+that individual event path, while the heartbeat protects the remaining batch
+rows. When changing timeouts, keep the lease longer than the worst-case
+single-event path and keep the heartbeat well below the lease. Short leases
+used by concurrency tests are intentional fault-injection settings, not
+production defaults.
+
+A duplicate enqueue can still occur if an enqueue succeeds just as its claim
+is lost, so the deterministic BullMQ job ID and idempotent receipt remain
+important.
 
 ## Retry layers
 
