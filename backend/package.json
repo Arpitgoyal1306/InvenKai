@@ -13,7 +13,8 @@
     "dispatcher:orders": "node src/workers/order-outbox-dispatcher.js",
     "test:docker-recovery": "NODE_ENV=test node --test --test-timeout=30000 --test-force-exit test/redis.recovery.docker.js test/redis.websocket.recovery.docker.js",
     "orders:failed-jobs": "node src/scripts/retry-failed-order-receipts.js",
-    "orders:retry-failed": "node src/scripts/retry-failed-order-receipts.js"
+    "orders:retry-failed": "node src/scripts/retry-failed-order-receipts.js",
+    "test:lease-integration": "NODE_ENV=test node --test --test-timeout=85000 --test-force-exit test/order-outbox-long-lease.integration.js"
   },
   "keywords": [],
   "author": "",
