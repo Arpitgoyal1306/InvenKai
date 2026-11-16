@@ -18,11 +18,30 @@ No Redis call is made inside checkout. The outbox dispatcher claims pending or
 expired-lease rows with `FOR UPDATE SKIP LOCKED`, publishes them, then marks
 them dispatched. A failed publish releases the row for a later retry.
 
-Each dispatcher claim has a fresh `claim_token`. The token must still match
-when a dispatcher marks an event dispatched or releases it for retry. If its
-60-second lease expires and another dispatcher claims the event, the old
-dispatcher cannot change the new owner's row. A duplicate publish can still
-occur at that boundary, so the deterministic BullMQ job ID remains important.
+Each dispatcher batch has a fresh `claim_token`, shared by all rows in
+that claim. The default lease remains 60 seconds, and the dispatcher renews
+every still-processing row owned by that token every 20 seconds (one-third of
+the lease) while the batch is active. It also renews the outstanding batch
+before progressing to the next event. Renewal updates are conditional on the
+row still being `processing` with the same claim token; rows already
+dispatched, released, or reclaimed are not renewed.
+
+If a renewal does not return a claimed row, the dispatcher treats that row's
+claim as lost and removes it from its remaining work. It will not enqueue,
+mark, or release that stale row. If PostgreSQL cannot confirm a renewal before
+the bounded renewal deadline, the dispatcher conservatively abandons all
+unconfirmed claims in that renewal attempt. Those rows remain
+`processing` and are recovered after their 60-second leases expire. The
+claim-token conditions on mark/release remain the final protection against a
+stale dispatcher changing a new owner's row.
+
+This heartbeat makes total batch duration independent of the 60-second lease:
+a batch can take longer than 60 seconds as long as the dispatcher can renew
+its remaining claims. The heartbeat interval should remain comfortably below
+the lease duration; it defaults to 20 seconds and can be configured through
+`leaseRenewalIntervalMs` when constructing the dispatcher. A duplicate
+enqueue can still occur if an enqueue succeeds just as its claim is lost, so
+the deterministic BullMQ job ID and idempotent receipt remain important.
 
 ## Retry layers
 
@@ -139,10 +158,15 @@ the process supervisor can restart the worker.
 The API's shared node-redis client remains managed by `src/config/redis.js`.
 The dispatcher and worker duplicate that client for BullMQ and wrap the
 duplicate with BullMQ's `createNodeRedisClient` adapter. The WebSocket Pub/Sub
-subscriber remains separate. BullMQ's Queue/Worker close operation shuts down
-the adapted connection; the application then closes or destroys the duplicate
-only if it remains open, before closing the shared Redis manager and PostgreSQL
-pool. The API checkout path does not contact Redis.
+subscriber remains separate. Queue creation gives the dedicated Redis
+connection attempt a 4-second deadline (shorter than the dispatcher's
+5-second outer queue-creation deadline). On timeout or setup failure, the
+duplicate is destroyed. A late connection settlement is observed; if it
+reopens a socket after timeout, that newly-open socket is also destroyed.
+Cleanup is idempotent for an already-closed client. BullMQ's Queue/Worker close
+operation shuts down the adapted connection; the application then closes or
+destroys the duplicate only if it remains open, before closing the shared Redis
+manager and PostgreSQL pool. The API checkout path does not contact Redis.
 
 On SIGTERM/SIGINT, the dispatcher stops polling and does not begin the remaining
 items in an already claimed batch. An in-flight enqueue is bounded by a
