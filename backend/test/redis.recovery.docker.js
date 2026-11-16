@@ -35,6 +35,20 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function withTimeout(promise, timeoutMs, message) {
+  let timeoutId;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function waitForPort(port, { timeoutMs = 10000 } = {}) {
   const deadline = Date.now() + timeoutMs;
 
@@ -56,6 +70,7 @@ async function waitForPort(port, { timeoutMs = 10000 } = {}) {
 }
 
 test("recovers the real Redis publisher after an initial outage", {
+  timeout: 30000,
   skip: dockerSkipReason,
 }, async () => {
   let containerStarted = false;
@@ -80,17 +95,16 @@ test("recovers the real Redis publisher after an initial outage", {
     execFileSync("docker", [
       "run", "-d", "--rm", "--name", containerName,
       "-p", `${HOST}:${port}:6379`, "redis:7-alpine",
-    ], { stdio: "ignore" });
+    ], { stdio: "ignore", timeout: 15000 });
     containerStarted = true;
 
     await waitForPort(port);
 
-    const connected = await Promise.race([
+    const connected = await withTimeout(
       connectionPromise,
-      delay(10000).then(() => {
-        throw new Error("Redis publisher did not recover within 10 seconds");
-      }),
-    ]);
+      10000,
+      "Redis publisher did not recover within 10 seconds",
+    );
 
     assert.equal(connected, true);
     assert.equal(manager.isRedisReady(), true);
@@ -100,7 +114,10 @@ test("recovers the real Redis publisher after an initial outage", {
 
     if (containerStarted) {
       try {
-        execFileSync("docker", ["rm", "-f", containerName], { stdio: "ignore" });
+        execFileSync("docker", ["rm", "-f", containerName], {
+          stdio: "ignore",
+          timeout: 5000,
+        });
       } catch (error) {
         console.error("[Test] Could not remove temporary Redis container:", error.message);
       }

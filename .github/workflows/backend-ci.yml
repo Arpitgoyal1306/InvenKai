@@ -17,6 +17,14 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      NODE_ENV: test
+      JWT_SECRET: ci-only-test-secret-not-for-production
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/invenkai
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/invenkai_test
+      REDIS_URL: redis://localhost:6379
+      TEST_REDIS_URL: redis://localhost:6379
     services:
       postgres:
         image: postgres:16
@@ -40,11 +48,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/invenkai
-      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/invenkai_test
-      REDIS_URL: redis://localhost:6379
-      TEST_REDIS_URL: redis://localhost:6379
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -83,4 +86,5 @@ jobs:
 
       - name: Run complete backend test suite
         working-directory: backend
+        timeout-minutes: 2
         run: npm test

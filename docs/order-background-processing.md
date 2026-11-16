@@ -79,16 +79,27 @@ npm run dispatcher:orders
 npm run worker:orders
 ```
 
-Run the default tests:
+Run the default test suite:
 
 ```bash
 npm test
 ```
 
-The default suite skips Docker recovery tests with an explicit reason when the
-Docker daemon is unavailable. The real BullMQ/PostgreSQL end-to-end test also
-requires `TEST_REDIS_URL` and `TEST_DATABASE_URL`. CI provisions PostgreSQL
-and Redis, checks migration up/down/up, and runs the full suite.
+The default test command runs regular `test/*.test.js` files with a
+30-second per-test limit and exits after all registered tests finish. The two
+Docker-based Redis recovery tests are deliberately excluded because they
+start nested containers and cover a separate recovery scenario.
+
+Run those optional Docker tests separately when Docker is available:
+
+```bash
+npm run test:docker-recovery
+```
+
+The real PostgreSQL/BullMQ end-to-end test runs in the normal suite when
+`TEST_DATABASE_URL` and `TEST_REDIS_URL` are configured. CI provisions both
+services, checks migration up/down/up, and runs the default suite with a
+five-minute job limit and a two-minute test-step limit.
 
 Configure `DATABASE_URL`, `REDIS_URL`, `TEST_DATABASE_URL`, and
 `TEST_REDIS_URL`. Never commit real credentials.
