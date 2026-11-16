@@ -237,3 +237,41 @@ test("cleans up a dedicated Redis client when connect resolves after its timeout
   assert.equal(redisManager.rawClient.isOpen, false);
   assert.equal(redisManager.rawClient.isReady, false);
 });
+
+
+test("destroys a socket that opens after the dedicated Redis connect timeout", async () => {
+  const redisManager = createRedisMock();
+  let destroyCalls = 0;
+
+  redisManager.rawClient.destroy = function destroy() {
+    destroyCalls += 1;
+    this.destroyed = true;
+    this.isOpen = false;
+    this.isReady = false;
+  };
+  redisManager.rawClient.connect = () => new Promise((resolve) => {
+    setTimeout(() => {
+      // Simulate a client implementation that completes the connection
+      // despite the earlier destroy request.
+      redisManager.rawClient.isOpen = true;
+      redisManager.rawClient.isReady = true;
+      resolve();
+    }, 60);
+  });
+
+  await assert.rejects(
+    createOrderQueue({
+      redisManager,
+      createRedisConnection: (client) => client,
+      connectionTimeoutMs: 15,
+    }),
+    /Timed out connecting the dedicated queue Redis client/,
+  );
+
+  assert.equal(destroyCalls, 1, "the timed-out connect attempt is destroyed immediately");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  assert.equal(destroyCalls, 2, "the newly-open late socket receives one cleanup operation");
+  assert.equal(redisManager.rawClient.isOpen, false);
+  assert.equal(redisManager.rawClient.isReady, false);
+});
