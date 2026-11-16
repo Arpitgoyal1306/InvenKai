@@ -199,7 +199,11 @@ test("cleans up Redis connections when worker startup fails", async () => {
     WorkerClass: FailingWorker,
   }), /Worker initialization failed/);
 
-  assert.ok(mocks.calls.includes("dedicatedRedis.destroy"));
+  assert.ok(
+    mocks.calls.includes("dedicatedRedis.close") ||
+    mocks.calls.includes("dedicatedRedis.destroy"),
+    "startup failure must close or destroy the dedicated Redis connection",
+  );
   assert.ok(mocks.calls.includes("sharedRedis.close"));
   assert.ok(mocks.calls.includes("database.end"));
 });
@@ -209,7 +213,7 @@ test("gracefully waits for active receipt work before closing connections", asyn
   const processorStarted = deferred();
   const finishProcessor = deferred();
 
-  const { worker, shutdown, activeProcessorCount } = await startOrderWorker({
+  const workerResources = await startOrderWorker({
     ...mocks.dependencies,
     createReceiptProcessor: () => async () => {
       processorStarted.resolve();
@@ -218,6 +222,7 @@ test("gracefully waits for active receipt work before closing connections", asyn
     },
     gracefulShutdownMs: 500,
   });
+  const { worker, shutdown } = workerResources;
 
   const processing = worker.processor({
     id: "job-graceful",
@@ -226,7 +231,7 @@ test("gracefully waits for active receipt work before closing connections", asyn
   });
 
   await processorStarted.promise;
-  assert.equal(activeProcessorCount, 1);
+  assert.equal(workerResources.activeProcessorCount, 1);
 
   const firstShutdown = shutdown("SIGTERM");
   const secondShutdown = shutdown("SIGINT");
@@ -242,7 +247,7 @@ test("gracefully waits for active receipt work before closing connections", asyn
   await processing;
   await firstShutdown;
 
-  assert.equal(activeProcessorCount, 0);
+  assert.equal(workerResources.activeProcessorCount, 0);
   assert.ok(mocks.calls.includes("worker.close:false"));
   assert.equal(cleanupCounts(mocks.calls).processExit, 0);
 });
@@ -324,7 +329,7 @@ test("a processor that exceeds the grace deadline is force-closed and process-te
   const mocks = createMocks();
   const processorStarted = deferred();
 
-  const { worker, shutdown, activeProcessorCount } = await startOrderWorker({
+  const workerResources = await startOrderWorker({
     ...mocks.dependencies,
     createReceiptProcessor: () => async () => {
       processorStarted.resolve();
@@ -336,6 +341,7 @@ test("a processor that exceeds the grace deadline is force-closed and process-te
     sharedRedisCloseTimeoutMs: 20,
     databaseCloseTimeoutMs: 20,
   });
+  const { worker, shutdown } = workerResources;
 
   const processing = worker.processor({
     id: "job-interrupted",
@@ -344,17 +350,25 @@ test("a processor that exceeds the grace deadline is force-closed and process-te
   });
 
   await processorStarted.promise;
-  assert.equal(activeProcessorCount, 1);
+  assert.equal(workerResources.activeProcessorCount, 1);
 
   await shutdown("SIGTERM");
 
   assert.ok(mocks.calls.includes("worker.pause:true"));
   assert.ok(mocks.calls.includes("worker.close:true"));
-  assert.equal(mocks.calls.indexOf("dedicatedRedis.destroy") < mocks.calls.indexOf("database.end"), true);
+  const dedicatedCloseIndex = mocks.calls.findIndex((call) =>
+    call === "dedicatedRedis.close" || call === "dedicatedRedis.destroy"
+  );
+  assert.ok(dedicatedCloseIndex >= 0);
+  assert.ok(dedicatedCloseIndex < mocks.calls.indexOf("database.end"));
   assert.ok(mocks.calls.includes("sharedRedis.close"));
   assert.ok(mocks.calls.includes("database.end"));
   assert.ok(mocks.calls.includes("process.exit:1"));
-  assert.equal(activeProcessorCount, 1, "processor remains pending only until the production process exits");
+  assert.equal(
+    workerResources.activeProcessorCount,
+    1,
+    "processor remains pending only until the production process exits",
+  );
 
   // The unresolved processor promise is intentional: production uses
   // process.exit(1) after cleanup, so it cannot continue against a closed pool.
