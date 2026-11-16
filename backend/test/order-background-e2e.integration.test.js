@@ -452,3 +452,308 @@ test(
     }
   },
 );
+
+
+function createScopedOutboxDb(orderIds, observedQueries = []) {
+  return {
+    async query(sql, params = []) {
+      observedQueries.push({ sql, params });
+
+      if (sql.includes("WITH candidates AS")) {
+        const scopedSql = sql.replace(
+          "FROM order_outbox\n         WHERE",
+          "FROM order_outbox\n         WHERE order_id = ANY($4::bigint[]) AND",
+        );
+        return testPool.query(scopedSql, [...params, orderIds]);
+      }
+
+      return testPool.query(sql, params);
+    },
+  };
+}
+
+async function createOrdersForFixture(fixture, count) {
+  const orders = [];
+
+  for (let index = 0; index < count; index += 1) {
+    const order = await createOrder(
+      fixture.userId,
+      [{ productId: fixture.productId, quantity: 1 }],
+      testPool,
+      async () => {},
+    );
+    orders.push(order);
+  }
+
+  return orders;
+}
+
+async function waitForCondition(predicate, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await delay(25);
+  }
+
+  throw new Error("Condition was not reached before timeout");
+}
+
+test(
+  "renews still-processing batch claims so unstarted rows survive a batch longer than 60 seconds",
+  {
+    timeout: 100000,
+  },
+  async () => {
+    let fixture;
+    let dispatcherA;
+    let dispatcherB;
+    let dispatchPromise;
+    let signalFirstEnqueue;
+    const firstEnqueueStarted = new Promise((resolve) => {
+      signalFirstEnqueue = resolve;
+    });
+    const enqueuedByA = [];
+    let queueBCreated = false;
+
+    try {
+      fixture = await createFixture();
+      const orders = await createOrdersForFixture(fixture, 4);
+      const orderIds = orders.map((order) => String(order.id));
+      const outboxRows = await testPool.query(
+        \`SELECT id, order_id, claim_token, status
+         FROM order_outbox
+         WHERE order_id = ANY($1::bigint[])
+         ORDER BY id\`,
+        [orderIds],
+      );
+      assert.equal(outboxRows.rowCount, 4);
+
+      dispatcherA = createOrderOutboxDispatcher({
+        db: createScopedOutboxDb(orderIds),
+        redisManager: {
+          isRedisReady() { return true; },
+          async connectRedis() { return true; },
+        },
+        batchSize: 4,
+        leaseSeconds: 60,
+        leaseRenewalIntervalMs: 10000,
+        enqueueTimeoutMs: 30000,
+        logger: { info() {}, warn() {}, error() {} },
+        createQueue: async () => ({
+          async enqueueOrderReceipt(orderId) {
+            enqueuedByA.push(String(orderId));
+            if (enqueuedByA.length === 1) signalFirstEnqueue();
+            // Three delayed enqueue operations make the batch exceed its
+            // original 60-second lease. The fourth row remains unstarted
+            // when dispatcher B checks whether it can reclaim the batch.
+            if (enqueuedByA.length <= 3) await delay(21000);
+          },
+          async close() {},
+        }),
+      });
+
+      dispatchPromise = dispatcherA.dispatchBatch();
+      await firstEnqueueStarted;
+      await delay(61000);
+
+      assert.equal(enqueuedByA.length, 3, "the fourth row should still be unstarted after 61 seconds");
+
+      const beforeB = await testPool.query(
+        \`SELECT id, order_id, status, claim_token,
+                locked_until > CURRENT_TIMESTAMP AS lease_valid
+         FROM order_outbox
+         WHERE order_id = ANY($1::bigint[])
+         ORDER BY id\`,
+        [orderIds],
+      );
+      assert.equal(beforeB.rows[3].status, "processing");
+      assert.equal(beforeB.rows[3].lease_valid, true);
+
+      dispatcherB = createOrderOutboxDispatcher({
+        db: createScopedOutboxDb(orderIds),
+        redisManager: {
+          isRedisReady() { return true; },
+          async connectRedis() { return true; },
+        },
+        batchSize: 4,
+        leaseSeconds: 60,
+        enqueueTimeoutMs: 30000,
+        logger: { info() {}, warn() {}, error() {} },
+        createQueue: async () => {
+          queueBCreated = true;
+          return {
+            async enqueueOrderReceipt() {},
+            async close() {},
+          };
+        },
+      });
+
+      const resultB = await dispatcherB.dispatchBatch();
+      assert.deepEqual(resultB, { claimed: 0, dispatched: 0, failed: 0 });
+      assert.equal(queueBCreated, false, "B must not create a queue when all rows still belong to A");
+
+      const resultA = await dispatchPromise;
+      assert.deepEqual(resultA, { claimed: 4, dispatched: 4, failed: 0 });
+      assert.deepEqual(enqueuedByA, orderIds);
+
+      const finalRows = await testPool.query(
+        \`SELECT status, attempts
+         FROM order_outbox
+         WHERE order_id = ANY($1::bigint[])
+         ORDER BY id\`,
+        [orderIds],
+      );
+      assert.equal(finalRows.rowCount, 4);
+      for (const row of finalRows.rows) {
+        assert.equal(row.status, "dispatched");
+        assert.equal(Number(row.attempts), 1);
+      }
+    } finally {
+      if (dispatchPromise) await Promise.race([dispatchPromise.catch(() => {}), delay(5000)]);
+      if (dispatcherA) await dispatcherA.close().catch(() => {});
+      if (dispatcherB) await dispatcherB.close().catch(() => {});
+      await cleanupFixture(fixture);
+    }
+  },
+);
+
+test(
+  "a dispatcher that loses one row's claim stops that stale row and cannot mark or release the new owner's row",
+  {
+    timeout: 20000,
+  },
+  async () => {
+    let fixture;
+    let dispatcherA;
+    let dispatcherB;
+    let dispatchAPromise;
+    let releaseA;
+    let signalAStarted;
+    const aStarted = new Promise((resolve) => {
+      signalAStarted = resolve;
+    });
+    const holdA = new Promise((resolve) => {
+      releaseA = resolve;
+    });
+    const enqueuedA = [];
+    const enqueuedB = [];
+    const logsA = [];
+    const queriesA = [];
+
+    try {
+      fixture = await createFixture();
+      const orders = await createOrdersForFixture(fixture, 2);
+      const orderIds = orders.map((order) => String(order.id));
+      const outboxRows = await testPool.query(
+        \`SELECT id, order_id
+         FROM order_outbox
+         WHERE order_id = ANY($1::bigint[])
+         ORDER BY id\`,
+        [orderIds],
+      );
+      assert.equal(outboxRows.rowCount, 2);
+      const firstOutboxId = String(outboxRows.rows[0].id);
+      const secondOutboxId = String(outboxRows.rows[1].id);
+
+      dispatcherA = createOrderOutboxDispatcher({
+        db: createScopedOutboxDb(orderIds, queriesA),
+        redisManager: {
+          isRedisReady() { return true; },
+          async connectRedis() { return true; },
+        },
+        batchSize: 2,
+        leaseSeconds: 60,
+        leaseRenewalIntervalMs: 1000,
+        enqueueTimeoutMs: 5000,
+        logger: {
+          info() {},
+          warn(message) { logsA.push(message); },
+          error(message) { logsA.push(message); },
+        },
+        createQueue: async () => ({
+          async enqueueOrderReceipt(orderId) {
+            enqueuedA.push(String(orderId));
+            if (enqueuedA.length === 1) {
+              signalAStarted();
+              await holdA;
+            }
+          },
+          async close() {},
+        }),
+      });
+
+      dispatchAPromise = dispatcherA.dispatchBatch();
+      await aStarted;
+
+      // Expire only the second row while A is still processing the first.
+      await testPool.query(
+        \`UPDATE order_outbox
+         SET locked_until = CURRENT_TIMESTAMP - INTERVAL '1 second'
+         WHERE id = $1 AND status = 'processing'\`,
+        [secondOutboxId],
+      );
+
+      dispatcherB = createOrderOutboxDispatcher({
+        db: createScopedOutboxDb(orderIds),
+        redisManager: {
+          isRedisReady() { return true; },
+          async connectRedis() { return true; },
+        },
+        batchSize: 1,
+        leaseSeconds: 60,
+        enqueueTimeoutMs: 5000,
+        logger: { info() {}, warn() {}, error() {} },
+        createQueue: async () => ({
+          async enqueueOrderReceipt(orderId) {
+            enqueuedB.push(String(orderId));
+          },
+          async close() {},
+        }),
+      });
+
+      const resultB = await dispatcherB.dispatchBatch();
+      assert.deepEqual(resultB, { claimed: 1, dispatched: 1, failed: 0 });
+      assert.deepEqual(enqueuedB, [orderIds[1]]);
+
+      await waitForCondition(
+        () => logsA.some((message) => message.includes("Lost claim for event " + secondOutboxId)),
+      );
+
+      releaseA();
+      const resultA = await dispatchAPromise;
+      assert.deepEqual(resultA, { claimed: 2, dispatched: 1, failed: 1 });
+      assert.deepEqual(enqueuedA, [orderIds[0]], "A must not enqueue the reclaimed row");
+
+      const staleMarks = queriesA.filter(
+        (query) => query.sql.includes("SET status = 'dispatched'") &&
+          String(query.params[0]) === secondOutboxId,
+      );
+      const staleReleases = queriesA.filter(
+        (query) => query.sql.includes("SET status = 'pending'") &&
+          String(query.params[0]) === secondOutboxId,
+      );
+      assert.equal(staleMarks.length, 0, "A must not mark B's row dispatched");
+      assert.equal(staleReleases.length, 0, "A must not release B's row");
+
+      const finalRows = await testPool.query(
+        \`SELECT id, status, attempts, claim_token
+         FROM order_outbox
+         WHERE id = ANY($1::bigint[])
+         ORDER BY id\`,
+        [[firstOutboxId, secondOutboxId]],
+      );
+      assert.equal(finalRows.rows[0].status, "dispatched");
+      assert.equal(Number(finalRows.rows[0].attempts), 1);
+      assert.equal(finalRows.rows[1].status, "dispatched");
+      assert.equal(Number(finalRows.rows[1].attempts), 2);
+      assert.equal(finalRows.rows[1].claim_token, null);
+    } finally {
+      releaseA?.();
+      if (dispatchAPromise) await Promise.race([dispatchAPromise.catch(() => {}), delay(5000)]);
+      if (dispatcherA) await dispatcherA.close().catch(() => {});
+      if (dispatcherB) await dispatcherB.close().catch(() => {});
+      await cleanupFixture(fixture);
+    }
+  },
+);
