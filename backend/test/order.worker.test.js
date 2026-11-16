@@ -49,6 +49,10 @@ function createMocks({
 
   const sharedClient = {
     isOpen: true,
+    duplicate() {
+      calls.push("dedicatedRedis.duplicate");
+      return rawClient;
+    },
     destroy() {
       calls.push("sharedRedis.destroy");
       this.isOpen = false;
