@@ -521,7 +521,11 @@ test(
 
     try {
       fixture = await createFixture();
-      const orders = await createOrdersForFixture(fixture, 4);
+      await testPool.query(
+        "UPDATE inventory SET quantity = 30 WHERE product_id = $1",
+        [fixture.productId],
+      );
+      const orders = await createOrdersForFixture(fixture, 25);
       const orderIds = orders.map((order) => String(order.id));
       const outboxRows = await testPool.query(
         `SELECT id, order_id, claim_token, status
@@ -530,7 +534,7 @@ test(
          ORDER BY id`,
         [orderIds],
       );
-      assert.equal(outboxRows.rowCount, 4);
+      assert.equal(outboxRows.rowCount, 25);
 
       dispatcherA = createOrderOutboxDispatcher({
         db: createScopedOutboxDb(orderIds),
@@ -538,7 +542,7 @@ test(
           isRedisReady() { return true; },
           async connectRedis() { return true; },
         },
-        batchSize: 4,
+        batchSize: 25,
         leaseSeconds: 60,
         leaseRenewalIntervalMs: 10000,
         enqueueTimeoutMs: 30000,
@@ -560,7 +564,7 @@ test(
       await firstEnqueueStarted;
       await delay(61000);
 
-      assert.equal(enqueuedByA.length, 3, "the fourth row should still be unstarted after 61 seconds");
+      assert.equal(enqueuedByA.length, 3, "the remaining 22 rows should still be unstarted after 61 seconds");
 
       const beforeB = await testPool.query(
         `SELECT id, order_id, status, claim_token,
@@ -570,8 +574,11 @@ test(
          ORDER BY id`,
         [orderIds],
       );
-      assert.equal(beforeB.rows[3].status, "processing");
-      assert.equal(beforeB.rows[3].lease_valid, true);
+      assert.equal(beforeB.rows.length, 25);
+      assert.ok(
+        beforeB.rows.slice(2).every((row) => row.status === "processing" && row.lease_valid),
+        "the active event and all 22 unstarted rows must retain valid leases",
+      );
 
       dispatcherB = createOrderOutboxDispatcher({
         db: createScopedOutboxDb(orderIds),
@@ -597,7 +604,7 @@ test(
       assert.equal(queueBCreated, false, "B must not create a queue when all rows still belong to A");
 
       const resultA = await dispatchPromise;
-      assert.deepEqual(resultA, { claimed: 4, dispatched: 4, failed: 0 });
+      assert.deepEqual(resultA, { claimed: 25, dispatched: 25, failed: 0 });
       assert.deepEqual(enqueuedByA, orderIds);
 
       const finalRows = await testPool.query(
@@ -607,7 +614,7 @@ test(
          ORDER BY id`,
         [orderIds],
       );
-      assert.equal(finalRows.rowCount, 4);
+      assert.equal(finalRows.rowCount, 25);
       for (const row of finalRows.rows) {
         assert.equal(row.status, "dispatched");
         assert.equal(Number(row.attempts), 1);
