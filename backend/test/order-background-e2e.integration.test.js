@@ -521,10 +521,10 @@ test(
       const orders = await createOrdersForFixture(fixture, 4);
       const orderIds = orders.map((order) => String(order.id));
       const outboxRows = await testPool.query(
-        \`SELECT id, order_id, claim_token, status
+        `SELECT id, order_id, claim_token, status
          FROM order_outbox
          WHERE order_id = ANY($1::bigint[])
-         ORDER BY id\`,
+         ORDER BY id`,
         [orderIds],
       );
       assert.equal(outboxRows.rowCount, 4);
@@ -560,11 +560,11 @@ test(
       assert.equal(enqueuedByA.length, 3, "the fourth row should still be unstarted after 61 seconds");
 
       const beforeB = await testPool.query(
-        \`SELECT id, order_id, status, claim_token,
+        `SELECT id, order_id, status, claim_token,
                 locked_until > CURRENT_TIMESTAMP AS lease_valid
          FROM order_outbox
          WHERE order_id = ANY($1::bigint[])
-         ORDER BY id\`,
+         ORDER BY id`,
         [orderIds],
       );
       assert.equal(beforeB.rows[3].status, "processing");
@@ -598,10 +598,10 @@ test(
       assert.deepEqual(enqueuedByA, orderIds);
 
       const finalRows = await testPool.query(
-        \`SELECT status, attempts
+        `SELECT status, attempts
          FROM order_outbox
          WHERE order_id = ANY($1::bigint[])
-         ORDER BY id\`,
+         ORDER BY id`,
         [orderIds],
       );
       assert.equal(finalRows.rowCount, 4);
@@ -646,10 +646,10 @@ test(
       const orders = await createOrdersForFixture(fixture, 2);
       const orderIds = orders.map((order) => String(order.id));
       const outboxRows = await testPool.query(
-        \`SELECT id, order_id
+        `SELECT id, order_id
          FROM order_outbox
          WHERE order_id = ANY($1::bigint[])
-         ORDER BY id\`,
+         ORDER BY id`,
         [orderIds],
       );
       assert.equal(outboxRows.rowCount, 2);
@@ -688,9 +688,9 @@ test(
 
       // Expire only the second row while A is still processing the first.
       await testPool.query(
-        \`UPDATE order_outbox
+        `UPDATE order_outbox
          SET locked_until = CURRENT_TIMESTAMP - INTERVAL '1 second'
-         WHERE id = $1 AND status = 'processing'\`,
+         WHERE id = $1 AND status = 'processing'`,
         [secondOutboxId],
       );
 
@@ -737,10 +737,10 @@ test(
       assert.equal(staleReleases.length, 0, "A must not release B's row");
 
       const finalRows = await testPool.query(
-        \`SELECT id, status, attempts, claim_token
+        `SELECT id, status, attempts, claim_token
          FROM order_outbox
          WHERE id = ANY($1::bigint[])
-         ORDER BY id\`,
+         ORDER BY id`,
         [[firstOutboxId, secondOutboxId]],
       );
       assert.equal(finalRows.rows[0].status, "dispatched");
