@@ -75,7 +75,7 @@ function createOrderOutboxDispatcher({
   async function claimPendingEvents() {
     const claimToken = randomUUID();
     const result = await db.query(
-      \`WITH candidates AS (
+      `WITH candidates AS (
          SELECT id
          FROM order_outbox
          WHERE
@@ -95,7 +95,7 @@ function createOrderOutboxDispatcher({
        FROM candidates
        WHERE events.id = candidates.id
        RETURNING events.id, events.order_id, events.payload,
-                 events.attempts, events.claim_token\`,
+                 events.attempts, events.claim_token`,
       [batchSize, leaseSeconds, claimToken],
     );
 
@@ -108,13 +108,13 @@ function createOrderOutboxDispatcher({
     const ids = events.map((event) => String(event.id));
     const result = await withTimeout(
       Promise.resolve().then(() => db.query(
-        \`UPDATE order_outbox
+        `UPDATE order_outbox
          SET locked_until = CURRENT_TIMESTAMP + ($1 * INTERVAL '1 second'),
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ANY($3::bigint[])
            AND status = 'processing'
            AND claim_token = $2::uuid
-         RETURNING id\`,
+         RETURNING id`,
         [leaseSeconds, claimToken, ids],
       )),
       enqueueTimeoutMs,
@@ -126,7 +126,7 @@ function createOrderOutboxDispatcher({
 
   async function markDispatched(event) {
     const result = await db.query(
-      \`UPDATE order_outbox
+      `UPDATE order_outbox
        SET status = 'dispatched',
            dispatched_at = CURRENT_TIMESTAMP,
            locked_until = NULL,
@@ -135,7 +135,7 @@ function createOrderOutboxDispatcher({
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1
          AND status = 'processing'
-         AND claim_token = $2::uuid\`,
+         AND claim_token = $2::uuid`,
       [event.id, event.claim_token],
     );
 
@@ -148,7 +148,7 @@ function createOrderOutboxDispatcher({
 
   async function releaseForRetry(event, error) {
     await db.query(
-      \`UPDATE order_outbox
+      `UPDATE order_outbox
        SET status = 'pending',
            available_at = CURRENT_TIMESTAMP + LEAST(POWER(2, attempts), 60) * INTERVAL '1 second',
            locked_until = NULL,
@@ -157,7 +157,7 @@ function createOrderOutboxDispatcher({
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1
          AND status = 'processing'
-         AND claim_token = $3::uuid\`,
+         AND claim_token = $3::uuid`,
       [event.id, String(error.message || error).slice(0, 2000), event.claim_token],
     );
   }
