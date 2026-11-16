@@ -343,6 +343,7 @@ const { createRedisManager } = require("../src/config/redis");
 const { createOrderQueue, ORDER_RECEIPT_JOB } = require("../src/queues/order.queue");
 const { startOrderWorker } = require("../src/workers/order.worker");
 const { createOrderReceiptProcessor } = require("../src/workers/order-receipt.processor");
+const { startDispatcher } = require("../src/workers/order-outbox-dispatcher");
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 const testRedisUrl = process.env.TEST_REDIS_URL;
@@ -624,6 +625,114 @@ test("two real dispatchers reclaim an expired lease without stale updates or dup
     await dispatcherRedisB.closeRedis().catch(() => {});
     await workerRedis.closeRedis().catch(() => {});
     await inspectRedis.closeRedis().catch(() => {});
+    await cleanupLeaseTestOrder(integrationPool, fixture);
+  }
+});
+
+
+test("SIGTERM bounds a stalled enqueue, releases its claim, and closes Redis/PostgreSQL", {
+  timeout: 15000,
+  skip: testDatabaseUrl
+    ? false
+    : "Requires TEST_DATABASE_URL for the shutdown/lease recovery integration test.",
+}, async () => {
+  const shutdownPool = new Pool({
+    connectionString: testDatabaseUrl,
+    max: 2,
+  });
+
+  let fixture;
+  let controller;
+  let queueClosed = false;
+  let redisClosed = false;
+  let databaseClosed = false;
+  let signalEnqueueStarted;
+
+  const enqueueStarted = new Promise((resolve) => {
+    signalEnqueueStarted = resolve;
+  });
+
+  const redisManager = {
+    isRedisReady() { return true; },
+    async connectRedis() { return true; },
+    async closeRedis() { redisClosed = true; },
+  };
+
+  const shutdownDb = {
+    async query(sql, params) {
+      return shutdownPool.query(sql, params);
+    },
+    async end() {
+      databaseClosed = true;
+      await shutdownPool.end();
+    },
+  };
+
+  try {
+    fixture = await createLeaseTestOrder(integrationPool);
+
+    controller = await startDispatcher({
+      db: shutdownDb,
+      redisManager,
+      createDispatcher: (options) => createOrderOutboxDispatcher({
+        ...options,
+        db: shutdownDb,
+        redisManager,
+        batchSize: 1,
+        leaseSeconds: 60,
+        enqueueTimeoutMs: 50,
+        createQueue: async () => ({
+          enqueueOrderReceipt() {
+            signalEnqueueStarted();
+            // Represents a Redis/BullMQ call that never responds. The
+            // dispatcher's timeout must release this claim for recovery.
+            return new Promise(() => {});
+          },
+          async close() {
+            queueClosed = true;
+          },
+        }),
+      }),
+      pollIntervalMs: 60000,
+      shutdownGraceMs: 1000,
+      queueCloseTimeoutMs: 1000,
+      registerSignals: false,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+
+    await Promise.race([
+      enqueueStarted,
+      pause(5000).then(() => {
+        throw new Error("Dispatcher never began the in-flight enqueue");
+      }),
+    ]);
+
+    await controller.shutdown("SIGTERM");
+
+    assert.equal(queueClosed, true);
+    assert.equal(redisClosed, true);
+    assert.equal(databaseClosed, true);
+
+    const recovered = await integrationPool.query(
+      `SELECT status, claim_token, last_error
+       FROM order_outbox
+       WHERE order_id = $1`,
+      [fixture.orderId],
+    );
+
+    assert.equal(recovered.rows[0].status, "pending");
+    assert.equal(recovered.rows[0].claim_token, null);
+    assert.match(recovered.rows[0].last_error, /Timed out enqueueing receipt job/);
+  } finally {
+    if (controller && !databaseClosed) {
+      await controller.shutdown("test cleanup").catch(() => {});
+    }
+    if (!databaseClosed) {
+      await shutdownPool.end().catch(() => {});
+    }
+    if (!redisClosed) {
+      await redisManager.closeRedis().catch(() => {});
+    }
     await cleanupLeaseTestOrder(integrationPool, fixture);
   }
 });
