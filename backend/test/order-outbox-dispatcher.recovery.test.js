@@ -567,12 +567,27 @@ test("two real dispatchers reclaim an expired lease without stale updates or dup
     assert.equal(finalOutbox.rows[0].status, "dispatched");
     assert.equal(finalOutbox.rows[0].claim_token, null);
 
+    await inspectRedis.connectRedis();
     inspectionQueue = await createOrderQueue({ redisManager: inspectRedis });
     await inspectionQueue.queue.waitUntilReady();
     await waitForQueueJob(
       inspectionQueue.queue,
       `order-${fixture.orderId}`,
       "completed",
+    );
+
+    // The two dispatchers used the same stable job ID. While that completed
+    // job is retained, the second enqueue must not create another copy.
+    const retainedJob = await inspectionQueue.queue.getJob(`order-${fixture.orderId}`);
+    assert.ok(retainedJob, "completed BullMQ job should remain retained");
+    const retainedJobs = await inspectionQueue.queue.getJobs(
+      ["waiting", "active", "completed", "failed"],
+      0,
+      -1,
+    );
+    assert.equal(
+      retainedJobs.filter((job) => job.id === `order-${fixture.orderId}`).length,
+      1,
     );
 
     // Deliver a second, distinct job for the same order. The unique receipt

@@ -276,9 +276,14 @@ test(
       const job = await queueResources.enqueueOrderReceipt(order.id);
 
       // Three receipt-write failures exhaust the configured BullMQ attempts.
-      await waitForJobState(queueResources.queue, job.id, "failed", 12000);
+      const failedJob = await waitForJobState(
+        queueResources.queue,
+        job.id,
+        "failed",
+        12000,
+      );
       assert.equal(remainingReceiptWriteFailures, 0);
-      assert.equal(job.attemptsMade, 3);
+      assert.equal(failedJob.attemptsMade, 3);
 
       const receiptBeforeRecovery = await testPool.query(
         "SELECT id FROM receipts WHERE order_id = $1",
@@ -288,7 +293,7 @@ test(
 
       // PostgreSQL has recovered. An operator can retry the retained failed
       // job with resetAttemptsMade=true to give it a fresh three attempts.
-      await job.retry("failed", { resetAttemptsMade: true });
+      await failedJob.retry("failed", { resetAttemptsMade: true });
       await waitForJobState(queueResources.queue, job.id, "completed", 10000);
 
       const receipts = await testPool.query(
@@ -312,6 +317,129 @@ test(
       if (queueResources) await queueResources.close().catch(() => {});
       if (workerResources) {
         await workerResources.shutdown("PostgreSQL retry integration test").catch(() => {});
+      } else {
+        await workerPool.end().catch(() => {});
+      }
+      await dispatcherRedis.closeRedis().catch(() => {});
+      await workerRedis.closeRedis().catch(() => {});
+      await cleanupFixture(fixture);
+    }
+  },
+);
+
+
+test(
+  "retries a pending outbox event after a real Redis connection outage and recovery",
+  {
+    timeout: 30000,
+    skip: process.env.TEST_REDIS_URL && process.env.TEST_DATABASE_URL
+      ? false
+      : "Requires TEST_DATABASE_URL and TEST_REDIS_URL.",
+  },
+  async () => {
+    const dispatcherRedis = createRedisManager({
+      url: process.env.TEST_REDIS_URL,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    const workerRedis = createRedisManager({
+      url: process.env.TEST_REDIS_URL,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    const workerPool = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 3,
+    });
+
+    let fixture;
+    let dispatcher;
+    let workerResources;
+    let connectCalls = 0;
+
+    const recoverableRedis = {
+      get client() {
+        return dispatcherRedis.client;
+      },
+      isRedisReady() {
+        return dispatcherRedis.isRedisReady();
+      },
+      async connectRedis() {
+        connectCalls += 1;
+
+        // First dispatcher attempt represents Redis being unavailable.
+        if (connectCalls === 1) return false;
+
+        return dispatcherRedis.connectRedis();
+      },
+      closeRedis() {
+        return dispatcherRedis.closeRedis();
+      },
+    };
+
+    try {
+      fixture = await createFixture();
+
+      const order = await createOrder(
+        fixture.userId,
+        [{ productId: fixture.productId, quantity: 1 }],
+        testPool,
+        async () => {},
+      );
+
+      workerResources = await startOrderWorker({
+        redisManager: workerRedis,
+        db: workerPool,
+        createReceiptProcessor: () => createOrderReceiptProcessor({ db: workerPool }),
+        logger: { info() {}, warn() {}, error() {} },
+        registerSignals: false,
+      });
+      await workerResources.worker.waitUntilReady();
+
+      dispatcher = createOrderOutboxDispatcher({
+        db: testPool,
+        redisManager: recoverableRedis,
+        createQueue: () => createOrderQueue({ redisManager: recoverableRedis }),
+      });
+
+      const firstAttempt = await dispatcher.dispatchBatch();
+      assert.deepEqual(firstAttempt, { claimed: 1, dispatched: 0, failed: 1 });
+
+      const pending = await testPool.query(
+        "SELECT status, attempts FROM order_outbox WHERE order_id = $1",
+        [order.id],
+      );
+      assert.equal(pending.rows[0].status, "pending");
+      assert.equal(Number(pending.rows[0].attempts), 1);
+
+      // Skip the normal retry delay to test recovery without waiting.
+      await testPool.query(
+        "UPDATE order_outbox SET available_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE order_id = $1",
+        [order.id],
+      );
+
+      const recoveredAttempt = await dispatcher.dispatchBatch();
+      assert.deepEqual(recoveredAttempt, { claimed: 1, dispatched: 1, failed: 0 });
+      assert.equal(connectCalls, 2);
+
+      const queueResources = await createOrderQueue({ redisManager: dispatcherRedis });
+      try {
+        await waitForJobState(
+          queueResources.queue,
+          `order-${order.id}`,
+          "completed",
+        );
+      } finally {
+        await queueResources.close();
+      }
+
+      const receipts = await testPool.query(
+        "SELECT id FROM receipts WHERE order_id = $1",
+        [order.id],
+      );
+      assert.equal(receipts.rowCount, 1);
+    } finally {
+      if (dispatcher) await dispatcher.close().catch(() => {});
+      if (workerResources) {
+        await workerResources.shutdown("Redis recovery integration test").catch(() => {});
       } else {
         await workerPool.end().catch(() => {});
       }
