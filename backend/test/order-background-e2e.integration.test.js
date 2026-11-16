@@ -551,9 +551,9 @@ test(
           async enqueueOrderReceipt(orderId) {
             enqueuedByA.push(String(orderId));
             if (enqueuedByA.length === 1) signalFirstEnqueue();
-            // Three delayed enqueue operations make the batch exceed its
-            // original 60-second lease. The fourth row remains unstarted
-            // when dispatcher B checks whether it can reclaim the batch.
+            // Three delayed enqueue operations make the 25-row batch exceed
+            // its original 60-second lease. The remaining 22 rows are still
+            // unstarted when dispatcher B checks whether it can reclaim them.
             if (enqueuedByA.length <= 3) await delay(21000);
           },
           async close() {},
