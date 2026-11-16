@@ -75,10 +75,12 @@ function createDedicatedClientLifecycle(rawClient) {
         "Timed out closing the dedicated queue Redis client",
       );
     } catch {
-      await destroy();
+      if (rawClient.isOpen || rawClient.isReady) {
+        await destroy();
+      }
     }
 
-    if (rawClient.isOpen) {
+    if (rawClient.isOpen || rawClient.isReady) {
       await destroy();
     }
   }
