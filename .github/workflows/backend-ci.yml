@@ -88,3 +88,8 @@ jobs:
         working-directory: backend
         timeout-minutes: 2
         run: npm test
+
+      - name: Run long outbox lease renewal integration test
+        working-directory: backend
+        timeout-minutes: 2
+        run: npm run test:lease-integration
