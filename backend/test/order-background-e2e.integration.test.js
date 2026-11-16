@@ -270,6 +270,9 @@ test(
       });
       await workerResources.worker.waitUntilReady();
 
+      const dispatcherRedisConnected = await dispatcherRedis.connectRedis();
+      assert.equal(dispatcherRedisConnected, true);
+
       queueResources = await createOrderQueue({ redisManager: dispatcherRedis });
       await queueResources.queue.waitUntilReady();
 
