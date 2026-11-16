@@ -216,7 +216,7 @@ function createOrderOutboxDispatcher({
             }
           }
 
-          renewalError.code = "OUTBOX_LEASE_LOST";
+          renewalError.code = "OUTBOX_LEASE_UNCONFIRMED";
           throw renewalError;
         }
 
@@ -343,10 +343,15 @@ function createOrderOutboxDispatcher({
                 closeError.message,
               );
             }
-          } else {
+          } else if (error.code === "OUTBOX_LEASE_LOST") {
             logger.warn(
               "[Outbox Dispatcher] Skipping stale claim for event " + event.id +
               "; another dispatcher owns it now.",
+            );
+          } else {
+            logger.warn(
+              "[Outbox Dispatcher] Skipping event " + event.id +
+              " because its claim could not be confirmed; lease expiry will recover it.",
             );
           }
         } finally {
