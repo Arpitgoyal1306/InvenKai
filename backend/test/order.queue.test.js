@@ -155,3 +155,85 @@ test("closes the BullMQ queue when close is called", async () => {
   assert.equal(queueClosed, true);
   assert.equal(redisManager.rawClient.destroyed, true);
 });
+
+
+test("bounds a dedicated Redis connect that never settles and destroys its duplicate once", async () => {
+  const redisManager = createRedisMock();
+  let destroyCalls = 0;
+  redisManager.rawClient.destroy = function destroy() {
+    destroyCalls += 1;
+    this.destroyed = true;
+    this.isOpen = false;
+    this.isReady = false;
+  };
+  redisManager.rawClient.connect = () => new Promise(() => {});
+
+  class UnexpectedQueue {
+    constructor() {
+      throw new Error("Queue must not be created after connect timeout");
+    }
+  }
+
+  await assert.rejects(
+    createOrderQueue({
+      QueueClass: UnexpectedQueue,
+      redisManager,
+      createRedisConnection: (client) => client,
+      connectionTimeoutMs: 20,
+    }),
+    /Timed out connecting the dedicated queue Redis client/,
+  );
+
+  assert.equal(destroyCalls, 1);
+  assert.equal(redisManager.rawClient.destroyed, true);
+  assert.equal(redisManager.rawClient.isOpen, false);
+});
+
+test("cleans up a dedicated Redis client when connect resolves after its timeout", async () => {
+  const redisManager = createRedisMock();
+  let destroyCalls = 0;
+  let connectFinished = false;
+
+  redisManager.rawClient.destroy = function destroy() {
+    destroyCalls += 1;
+    this.destroyed = true;
+    this.isOpen = false;
+    this.isReady = false;
+  };
+  redisManager.rawClient.connect = () => new Promise((resolve) => {
+    setTimeout(() => {
+      connectFinished = true;
+      // Simulate a late successful completion. If destroy already aborted
+      // the socket, a late connect completion must not reopen it.
+      if (!redisManager.rawClient.destroyed) {
+        redisManager.rawClient.isOpen = true;
+        redisManager.rawClient.isReady = true;
+      }
+      resolve();
+    }, 60);
+  });
+
+  class UnexpectedQueue {
+    constructor() {
+      throw new Error("Queue must not be created after connect timeout");
+    }
+  }
+
+  await assert.rejects(
+    createOrderQueue({
+      QueueClass: UnexpectedQueue,
+      redisManager,
+      createRedisConnection: (client) => client,
+      connectionTimeoutMs: 15,
+    }),
+    /Timed out connecting the dedicated queue Redis client/,
+  );
+
+  assert.equal(destroyCalls, 1, "timeout should destroy the in-flight duplicate once");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  assert.equal(connectFinished, true);
+  assert.equal(destroyCalls, 1, "late completion must not double-destroy an already closed client");
+  assert.equal(redisManager.rawClient.isOpen, false);
+  assert.equal(redisManager.rawClient.isReady, false);
+});
