@@ -212,3 +212,112 @@ test(
     }
   },
 );
+
+
+test(
+  "retries temporary PostgreSQL receipt failures and allows recovery of an exhausted job",
+  {
+    timeout: 30000,
+    skip: process.env.TEST_REDIS_URL && process.env.TEST_DATABASE_URL
+      ? false
+      : "Requires TEST_DATABASE_URL and TEST_REDIS_URL.",
+  },
+  async () => {
+    const dispatcherRedis = createRedisManager({
+      url: process.env.TEST_REDIS_URL,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    const workerRedis = createRedisManager({
+      url: process.env.TEST_REDIS_URL,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    const workerPool = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL,
+      max: 3,
+    });
+
+    let fixture;
+    let workerResources;
+    let queueResources;
+    let remainingReceiptWriteFailures = 3;
+
+    const flakyDatabase = {
+      async query(sql, params) {
+        if (sql.includes("INSERT INTO receipts") && remainingReceiptWriteFailures > 0) {
+          remainingReceiptWriteFailures -= 1;
+          throw new Error("Simulated PostgreSQL outage during receipt write");
+        }
+        return workerPool.query(sql, params);
+      },
+    };
+
+    try {
+      fixture = await createFixture();
+
+      const order = await createOrder(
+        fixture.userId,
+        [{ productId: fixture.productId, quantity: 1 }],
+        testPool,
+        async () => {},
+      );
+
+      workerResources = await startOrderWorker({
+        redisManager: workerRedis,
+        db: workerPool,
+        createReceiptProcessor: () => createOrderReceiptProcessor({ db: flakyDatabase }),
+        logger: { info() {}, warn() {}, error() {} },
+        registerSignals: false,
+      });
+      await workerResources.worker.waitUntilReady();
+
+      queueResources = await createOrderQueue({ redisManager: dispatcherRedis });
+      await queueResources.queue.waitUntilReady();
+
+      const job = await queueResources.enqueueOrderReceipt(order.id);
+
+      // Three receipt-write failures exhaust the configured BullMQ attempts.
+      await waitForJobState(queueResources.queue, job.id, "failed", 12000);
+      assert.equal(remainingReceiptWriteFailures, 0);
+      assert.equal(job.attemptsMade, 3);
+
+      const receiptBeforeRecovery = await testPool.query(
+        "SELECT id FROM receipts WHERE order_id = $1",
+        [order.id],
+      );
+      assert.equal(receiptBeforeRecovery.rowCount, 0);
+
+      // PostgreSQL has recovered. An operator can retry the retained failed
+      // job with resetAttemptsMade=true to give it a fresh three attempts.
+      await job.retry("failed", { resetAttemptsMade: true });
+      await waitForJobState(queueResources.queue, job.id, "completed", 10000);
+
+      const receipts = await testPool.query(
+        "SELECT id FROM receipts WHERE order_id = $1",
+        [order.id],
+      );
+      assert.equal(receipts.rowCount, 1);
+
+      const replay = await queueResources.queue.add(
+        ORDER_RECEIPT_JOB,
+        { orderId: String(order.id) },
+        { jobId: `pg-recovery-replay-${order.id}`, attempts: 1 },
+      );
+      await waitForJobState(queueResources.queue, replay.id, "completed");
+      const receiptCount = await testPool.query(
+        "SELECT id FROM receipts WHERE order_id = $1",
+        [order.id],
+      );
+      assert.equal(receiptCount.rowCount, 1);
+    } finally {
+      if (queueResources) await queueResources.close().catch(() => {});
+      if (workerResources) {
+        await workerResources.shutdown("PostgreSQL retry integration test").catch(() => {});
+      } else {
+        await workerPool.end().catch(() => {});
+      }
+      await dispatcherRedis.closeRedis().catch(() => {});
+      await workerRedis.closeRedis().catch(() => {});
+      await cleanupFixture(fixture);
+    }
+  },
+);

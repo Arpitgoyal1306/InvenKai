@@ -4,14 +4,16 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "NODE_ENV=test node --test --test-timeout=30000 --test-force-exit \"test/*.test.js\"",
+    "test": "NODE_ENV=test node --test --test-concurrency=1 --test-timeout=30000 --test-force-exit \"test/*.test.js\"",
     "test:integration": "NODE_ENV=test node --test test/order-outbox.integration.test.js test/order-background-e2e.integration.test.js",
     "start": "node server.js",
     "dev": "nodemon server.js",
     "migrate": "node -r dotenv/config ./node_modules/node-pg-migrate/bin/node-pg-migrate",
     "worker:orders": "node src/workers/order.worker.js",
     "dispatcher:orders": "node src/workers/order-outbox-dispatcher.js",
-    "test:docker-recovery": "NODE_ENV=test node --test --test-timeout=30000 --test-force-exit test/redis.recovery.docker.js test/redis.websocket.recovery.docker.js"
+    "test:docker-recovery": "NODE_ENV=test node --test --test-timeout=30000 --test-force-exit test/redis.recovery.docker.js test/redis.websocket.recovery.docker.js",
+    "orders:failed-jobs": "node src/scripts/retry-failed-order-receipts.js",
+    "orders:retry-failed": "node src/scripts/retry-failed-order-receipts.js"
   },
   "keywords": [],
   "author": "",

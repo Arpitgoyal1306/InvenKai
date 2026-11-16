@@ -42,9 +42,59 @@ The PostgreSQL outbox `attempts` counter and BullMQ's job attempts are separate:
 
 A crash after enqueue but before the outbox status update can cause the
 dispatcher to publish the same deterministic job ID again. BullMQ suppresses
-duplicate adds while that job is retained. The receipt's unique `order_id`
-constraint and `ON CONFLICT DO NOTHING` also make repeated worker execution
-safe even if a separately delivered job reaches the worker again.
+duplicate adds while that job is retained. If the original job has already
+been removed from Redis, a later publish may create another job; the receipt's
+unique `order_id` constraint and `ON CONFLICT DO NOTHING` make repeated
+worker execution safe in either case.
+
+If Redis becomes unavailable while the dispatcher is running, its enqueue
+attempt fails and it best-effort returns the event to `pending` with a retry
+time. If PostgreSQL is also unavailable, the release update may fail; the
+event remains `processing` and is reclaimed after its lease expires. The
+dispatcher polls again every two seconds, reconnects to Redis, and then
+publishes eligible pending or expired-lease rows.
+
+If PostgreSQL is unavailable while a worker writes a receipt, the processor
+throws an error. BullMQ retries the job up to three times using exponential
+backoff. If all three attempts fail, the job remains in the failed set and
+the outbox row remains dispatched. The receipt may therefore be missing until
+an operator fixes the database problem and manually retries the retained job.
+
+### Inspect and retry a failed receipt job
+
+Keep the order worker running while performing a manual retry. First restore
+PostgreSQL connectivity and inspect the failed receipt jobs:
+
+```bash
+npm run orders:failed-jobs
+```
+
+The command lists the BullMQ job ID, order ID, attempts used, and last failure
+reason. To retry one order after its underlying issue is fixed:
+
+```bash
+npm run orders:retry-failed -- 123
+```
+
+Replace `123` with the order ID shown by the inspection command. The command
+checks whether a receipt already exists. If one exists, it does not retry the
+job. Otherwise it checks that the retained job is the failed receipt job for
+that exact order, then calls BullMQ's failed-job retry operation and resets
+the exhausted attempt counter so the job receives a fresh three attempts.
+The worker must be running to process the requeued job.
+
+Verify the result in PostgreSQL:
+
+```sql
+SELECT id, order_id, receipt_number, issued_at
+FROM receipts
+WHERE order_id = 123;
+```
+
+Exactly one row should exist. Do not create a new order job with an ad-hoc ID
+as a substitute for retrying the retained failed job. The unique receipt
+`order_id` constraint and idempotent processor remain the final safety
+boundary if the job is delivered again.
 
 ## Receipt fields
 
@@ -61,6 +111,17 @@ subscriber remains separate. BullMQ's Queue/Worker close operation shuts down
 the adapted connection; the application then closes or destroys the duplicate
 only if it remains open, before closing the shared Redis manager and PostgreSQL
 pool. The API checkout path does not contact Redis.
+
+On SIGTERM/SIGINT, the dispatcher stops polling and does not begin the remaining
+items in an already claimed batch. An in-flight enqueue is bounded by a
+five-second timeout. The process waits up to its configured shutdown grace
+period, closes the queue with a bounded wait, then closes Redis and PostgreSQL
+using nested `finally` blocks. Rows claimed but not dispatched remain
+`processing`; after the 60-second lease expires, another dispatcher can
+reclaim them. Claim-token checks prevent a stale dispatcher from modifying
+the new owner's claim. A job accepted by Redis just before shutdown is safe
+to publish again because its job ID is stable and receipt persistence is
+idempotent.
 
 ## Commands
 
@@ -94,6 +155,13 @@ Run those optional Docker tests separately when Docker is available:
 
 ```bash
 npm run test:docker-recovery
+```
+
+Inspect and retry exhausted receipt jobs:
+
+```bash
+npm run orders:failed-jobs
+npm run orders:retry-failed -- <orderId>
 ```
 
 The real PostgreSQL/BullMQ end-to-end test runs in the normal suite when
