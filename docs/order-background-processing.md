@@ -136,6 +136,40 @@ boundary if the job is delivered again.
 user ID, total amount, JSON item snapshot (product ID/name/SKU, unit price,
 quantity, line total), and issue timestamp. It is not a payment record.
 
+## Worker startup and connection deadlines
+
+The order worker installs SIGINT/SIGTERM handlers before it starts either
+Redis connection. Startup and shutdown share one lifecycle state
+(`starting`, `running`, `stopping`, `stopped`, or `failed`). A signal
+changes that state synchronously and starts the single shared cleanup promise.
+Every startup continuation checks the state after an awaited connection and
+immediately before constructing the BullMQ Worker. Therefore a signal during
+startup cannot create a Worker after shutdown has begun.
+
+The shared Redis connection and the dedicated node-redis client used by
+BullMQ each have an independent 5-second startup deadline. The dedicated
+client is created only after the shared Redis manager reports readiness.
+A timeout, connection error, or signal aborts the relevant pending connection
+using the corresponding client's destroy/close path. The worker also observes
+both connection promises after the deadline: if a late completion opens a
+socket after shutdown or timeout, that exact client is destroyed again so a
+late success cannot leave an orphaned socket.
+
+Startup failures and ordinary shutdown use the same idempotent cleanup path.
+It attempts dedicated Redis, shared Redis, and PostgreSQL cleanup in that
+order, each with the existing bounded close deadlines (2 seconds per Redis
+resource and 3 seconds for PostgreSQL). A failure or timeout in one cleanup
+does not prevent the later cleanup steps. If shutdown is incomplete, the
+worker escalates through the existing non-zero process termination policy;
+it does not report a graceful shutdown. If startup failed without a signal,
+the original startup error is rethrown after cleanup.
+
+The 5-second shared and dedicated startup deadlines are configurable through
+`sharedRedisConnectTimeoutMs` and `dedicatedRedisConnectTimeoutMs` in
+`startOrderWorker()` for tests. The default backend suite includes tests for
+never-settling shared and dedicated connections, late connection resolution,
+and SIGTERM during startup.
+
 ## Worker shutdown and interrupted receipts
 
 The order worker uses an **active-job-aware 20-second graceful shutdown
