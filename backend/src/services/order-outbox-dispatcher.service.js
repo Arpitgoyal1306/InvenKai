@@ -5,6 +5,7 @@ const redis = require("../config/redis");
 
 const BATCH_SIZE = 25;
 const LEASE_SECONDS = 60;
+const LEASE_RENEWAL_INTERVAL_MS = 20000;
 const ENQUEUE_TIMEOUT_MS = 5000;
 const QUEUE_CLOSE_TIMEOUT_MS = 4000;
 
@@ -25,6 +26,7 @@ function createOrderOutboxDispatcher({
   redisManager = redis,
   batchSize = BATCH_SIZE,
   leaseSeconds = LEASE_SECONDS,
+  leaseRenewalIntervalMs = Math.max(100, Math.floor(leaseSeconds * 1000 / 3)),
   enqueueTimeoutMs = ENQUEUE_TIMEOUT_MS,
   queueCloseTimeoutMs = QUEUE_CLOSE_TIMEOUT_MS,
   logger = console,
@@ -39,7 +41,7 @@ function createOrderOutboxDispatcher({
 
     if (!redisManager.isRedisReady()) {
       const connected = await withTimeout(
-        redisManager.connectRedis(),
+        Promise.resolve().then(() => redisManager.connectRedis()),
         enqueueTimeoutMs,
         "Timed out connecting the outbox dispatcher to Redis",
       );
@@ -51,7 +53,7 @@ function createOrderOutboxDispatcher({
 
     if (!queueResources) {
       const resources = await withTimeout(
-        createQueue(),
+        Promise.resolve().then(() => createQueue()),
         enqueueTimeoutMs,
         "Timed out creating the BullMQ order queue",
       );
@@ -73,7 +75,7 @@ function createOrderOutboxDispatcher({
   async function claimPendingEvents() {
     const claimToken = randomUUID();
     const result = await db.query(
-      `WITH candidates AS (
+      \`WITH candidates AS (
          SELECT id
          FROM order_outbox
          WHERE
@@ -93,16 +95,38 @@ function createOrderOutboxDispatcher({
        FROM candidates
        WHERE events.id = candidates.id
        RETURNING events.id, events.order_id, events.payload,
-                 events.attempts, events.claim_token`,
+                 events.attempts, events.claim_token\`,
       [batchSize, leaseSeconds, claimToken],
     );
 
     return result.rows;
   }
 
+  async function renewClaimedEvents(events, claimToken) {
+    if (events.length === 0) return new Set();
+
+    const ids = events.map((event) => String(event.id));
+    const result = await withTimeout(
+      Promise.resolve().then(() => db.query(
+        \`UPDATE order_outbox
+         SET locked_until = CURRENT_TIMESTAMP + ($1 * INTERVAL '1 second'),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ANY($3::bigint[])
+           AND status = 'processing'
+           AND claim_token = $2::uuid
+         RETURNING id\`,
+        [leaseSeconds, claimToken, ids],
+      )),
+      enqueueTimeoutMs,
+      "Timed out renewing the outbox batch lease",
+    );
+
+    return new Set(result.rows.map((row) => String(row.id)));
+  }
+
   async function markDispatched(event) {
     const result = await db.query(
-      `UPDATE order_outbox
+      \`UPDATE order_outbox
        SET status = 'dispatched',
            dispatched_at = CURRENT_TIMESTAMP,
            locked_until = NULL,
@@ -111,7 +135,7 @@ function createOrderOutboxDispatcher({
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1
          AND status = 'processing'
-         AND claim_token = $2::uuid`,
+         AND claim_token = $2::uuid\`,
       [event.id, event.claim_token],
     );
 
@@ -124,7 +148,7 @@ function createOrderOutboxDispatcher({
 
   async function releaseForRetry(event, error) {
     await db.query(
-      `UPDATE order_outbox
+      \`UPDATE order_outbox
        SET status = 'pending',
            available_at = CURRENT_TIMESTAMP + LEAST(POWER(2, attempts), 60) * INTERVAL '1 second',
            locked_until = NULL,
@@ -133,7 +157,7 @@ function createOrderOutboxDispatcher({
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1
          AND status = 'processing'
-         AND claim_token = $3::uuid`,
+         AND claim_token = $3::uuid\`,
       [event.id, String(error.message || error).slice(0, 2000), event.claim_token],
     );
   }
@@ -145,7 +169,7 @@ function createOrderOutboxDispatcher({
     queueResources = null;
 
     await withTimeout(
-      resources.close(),
+      Promise.resolve().then(() => resources.close()),
       queueCloseTimeoutMs,
       "Timed out closing the BullMQ order queue",
     );
@@ -160,62 +184,174 @@ function createOrderOutboxDispatcher({
     let dispatched = 0;
     let failed = 0;
 
-    for (const event of events) {
-      // Rows already claimed but not started remain processing until their
-      // lease expires. A later dispatcher can safely reclaim them.
-      if (stopped) break;
+    const claimToken = events[0].claim_token;
+    const pendingEvents = new Map(events.map((event) => [String(event.id), event]));
+    const finalizingEventIds = new Set();
+    const lostEventIds = new Set();
+    let renewalPromise = null;
 
-      try {
-        const queue = await ensureQueue();
+    async function renewPendingClaims() {
+      if (renewalPromise) return renewalPromise;
 
-        // A timed-out enqueue may have reached Redis before its response was
-        // lost. The deterministic job ID makes a later enqueue safe.
-        await withTimeout(
-          queue.enqueueOrderReceipt(event.order_id),
-          enqueueTimeoutMs,
-          `Timed out enqueueing receipt job for outbox event ${event.id}`,
-        );
+      const candidates = Array.from(pendingEvents.values()).filter(
+        (event) => !finalizingEventIds.has(String(event.id)) &&
+          !lostEventIds.has(String(event.id)),
+      );
+      if (candidates.length === 0) return;
 
-        await withTimeout(
-          markDispatched(event),
-          enqueueTimeoutMs,
-          `Timed out marking outbox event ${event.id} as dispatched`,
-        );
+      const currentRenewal = (async () => {
+        const renewedIds = await renewClaimedEvents(candidates, claimToken);
 
-        dispatched += 1;
-      } catch (error) {
-        failed += 1;
+        for (const event of candidates) {
+          const id = String(event.id);
 
-        // A stale claim must never release or overwrite the current owner's
-        // lease. For other errors, release is best effort; lease expiry is the
-        // recovery path if PostgreSQL is unavailable too.
-        if (error.code !== "OUTBOX_LEASE_LOST") {
-          try {
-            await withTimeout(
-              releaseForRetry(event, error),
-              enqueueTimeoutMs,
-              `Timed out releasing outbox event ${event.id} for retry`,
-            );
-          } catch (releaseError) {
-            logger.error(
-              `[Outbox Dispatcher] Could not release event ${event.id}; lease expiry will recover it:`,
-              releaseError.message,
+          // An event may have completed while this renewal query was in flight.
+          // Do not report a completed/finalizing event as a lost lease.
+          if (
+            pendingEvents.has(id) &&
+            !finalizingEventIds.has(id) &&
+            !renewedIds.has(id)
+          ) {
+            lostEventIds.add(id);
+            pendingEvents.delete(id);
+            logger.warn(
+              "[Outbox Dispatcher] Lost claim for event " + id +
+              "; it will not be marked or released by this dispatcher.",
             );
           }
-
-          try {
-            await closeQueueResources();
-          } catch (closeError) {
-            logger.error(
-              `[Outbox Dispatcher] Queue cleanup after event ${event.id} failed:`,
-              closeError.message,
-            );
-          }
-        } else {
-          logger.warn(
-            `[Outbox Dispatcher] Lost lease for event ${event.id}; another dispatcher owns it now.`,
-          );
         }
+      })();
+
+      renewalPromise = currentRenewal.finally(() => {
+        renewalPromise = null;
+      });
+      return renewalPromise;
+    }
+
+    const renewalTimer = setInterval(() => {
+      void renewPendingClaims().catch((error) => {
+        logger.error(
+          "[Outbox Dispatcher] Lease renewal failed; unconfirmed claims will not be started:",
+          error.message,
+        );
+      });
+    }, leaseRenewalIntervalMs);
+    renewalTimer.unref?.();
+
+    try {
+      for (const event of events) {
+        const eventId = String(event.id);
+
+        // A row that another dispatcher reclaimed is removed from the
+        // pending set by the token-guarded renewal. Never enqueue, mark, or
+        // release that stale claim.
+        if (!pendingEvents.has(eventId) || lostEventIds.has(eventId)) {
+          failed += 1;
+          continue;
+        }
+        if (stopped) break;
+
+        try {
+          // Renew the entire uncompleted portion before progressing. The
+          // background heartbeat repeats this while a batch is in flight.
+          await renewPendingClaims();
+
+          if (!pendingEvents.has(eventId) || lostEventIds.has(eventId)) {
+            failed += 1;
+            continue;
+          }
+
+          const queue = await ensureQueue();
+
+          if (!pendingEvents.has(eventId) || lostEventIds.has(eventId)) {
+            throw Object.assign(
+              new Error("Outbox claim was lost while preparing the queue"),
+              { code: "OUTBOX_LEASE_LOST" },
+            );
+          }
+
+          // A timed-out enqueue may have reached Redis before its response was
+          // lost. The deterministic job ID makes a later enqueue safe.
+          await withTimeout(
+            Promise.resolve().then(() => queue.enqueueOrderReceipt(event.order_id)),
+            enqueueTimeoutMs,
+            "Timed out enqueueing receipt job for outbox event " + event.id,
+          );
+
+          if (!pendingEvents.has(eventId) || lostEventIds.has(eventId)) {
+            throw Object.assign(
+              new Error("Outbox claim was lost while enqueueing the job"),
+              { code: "OUTBOX_LEASE_LOST" },
+            );
+          }
+
+          // Exclude this event from lease renewal while its token-guarded
+          // terminal update is in flight. All later batch rows keep renewing.
+          finalizingEventIds.add(eventId);
+          await withTimeout(
+            Promise.resolve().then(() => markDispatched(event)),
+            enqueueTimeoutMs,
+            "Timed out marking outbox event " + event.id + " as dispatched",
+          );
+
+          dispatched += 1;
+        } catch (error) {
+          failed += 1;
+
+          // A heartbeat may have observed that another dispatcher reclaimed
+          // this row while an enqueue was in flight. The stable job ID makes
+          // that enqueue replay-safe, but the old token must not mutate the
+          // new owner's row.
+          if (error.code !== "OUTBOX_LEASE_LOST" && !lostEventIds.has(eventId)) {
+            finalizingEventIds.add(eventId);
+            try {
+              await withTimeout(
+                Promise.resolve().then(() => releaseForRetry(event, error)),
+                enqueueTimeoutMs,
+                "Timed out releasing outbox event " + event.id + " for retry",
+              );
+            } catch (releaseError) {
+              logger.error(
+                "[Outbox Dispatcher] Could not release event " + event.id +
+                "; lease expiry will recover it:",
+                releaseError.message,
+              );
+            }
+
+            try {
+              await closeQueueResources();
+            } catch (closeError) {
+              logger.error(
+                "[Outbox Dispatcher] Queue cleanup after event " + event.id + " failed:",
+                closeError.message,
+              );
+            }
+          } else {
+            logger.warn(
+              "[Outbox Dispatcher] Skipping stale claim for event " + event.id +
+              "; another dispatcher owns it now.",
+            );
+          }
+        } finally {
+          finalizingEventIds.add(eventId);
+          pendingEvents.delete(eventId);
+        }
+      }
+    } catch (error) {
+      // If the database cannot confirm ownership, leave remaining rows in
+      // processing. Their leases expire and a later dispatcher can reclaim
+      // them; do not publish events with unconfirmed claims.
+      failed += pendingEvents.size;
+      logger.error(
+        "[Outbox Dispatcher] Stopping this batch because claim ownership could not be renewed:",
+        error.message,
+      );
+    } finally {
+      clearInterval(renewalTimer);
+      if (renewalPromise) {
+        await renewalPromise.catch((error) => {
+          logger.error("[Outbox Dispatcher] Final lease renewal did not settle:", error.message);
+        });
       }
     }
 
@@ -237,4 +373,7 @@ function createOrderOutboxDispatcher({
 module.exports = {
   createOrderOutboxDispatcher,
   withTimeout,
+  BATCH_SIZE,
+  LEASE_SECONDS,
+  LEASE_RENEWAL_INTERVAL_MS,
 };
