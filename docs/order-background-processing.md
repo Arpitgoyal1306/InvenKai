@@ -102,6 +102,38 @@ boundary if the job is delivered again.
 user ID, total amount, JSON item snapshot (product ID/name/SKU, unit price,
 quantity, line total), and issue timestamp. It is not a payment record.
 
+## Worker shutdown and interrupted receipts
+
+The order worker uses an **active-job-aware 20-second graceful shutdown
+window**:
+
+1. On SIGTERM/SIGINT it calls BullMQ `worker.pause(true)` to stop fetching new
+   jobs without waiting inside BullMQ's pause method.
+2. The worker tracks each receipt processor promise and waits up to 20 seconds
+   for all active receipt writes to finish.
+3. If they drain, BullMQ is closed normally. The dedicated Redis client, shared
+   Redis manager, and PostgreSQL pool are then closed in that order. Each
+   cleanup step is bounded and is attempted even when an earlier step fails.
+4. If active processing does not drain, the worker uses BullMQ
+   `worker.close(true)` to stop the worker and its lock-renewal connection.
+   Dedicated Redis, shared Redis, and PostgreSQL cleanup are each attempted
+   with bounded waits. The worker process then exits with code 1.
+
+The forced path deliberately **does not leave the Node.js process running**:
+an unresolved receipt processor must not continue and issue queries against a
+closed PostgreSQL pool. Process termination is the final safety boundary.
+Because the worker connection is force-closed, BullMQ no longer renews the
+interrupted job's lock. Once the lock expires, another worker's stalled-job
+checker can recover the job for processing. A receipt write that committed
+before interruption is safe to replay because receipts have a unique
+`order_id` and the processor uses `ON CONFLICT DO NOTHING`.
+
+Shutdown close deadlines are configurable through `startOrderWorker()` for
+tests; production defaults are 20 seconds to drain active processors, 3 seconds
+to pause the worker, 5 seconds to close BullMQ, 2 seconds per Redis close, and
+3 seconds to close the PostgreSQL pool. A forced shutdown exits non-zero so
+the process supervisor can restart the worker.
+
 ## Redis adapter and shutdown
 
 The API's shared node-redis client remains managed by `src/config/redis.js`.
