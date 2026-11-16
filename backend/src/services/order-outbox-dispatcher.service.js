@@ -200,7 +200,25 @@ function createOrderOutboxDispatcher({
       if (candidates.length === 0) return;
 
       const currentRenewal = (async () => {
-        const renewedIds = await renewClaimedEvents(candidates, claimToken);
+        let renewedIds;
+
+        try {
+          renewedIds = await renewClaimedEvents(candidates, claimToken);
+        } catch (renewalError) {
+          // A database timeout is not proof the claim still belongs to us.
+          // Conservatively stop using every unconfirmed claim. Their lease
+          // expiry is the recovery path if this was only a transient outage.
+          for (const event of candidates) {
+            const id = String(event.id);
+            if (pendingEvents.has(id) && !finalizingEventIds.has(id)) {
+              lostEventIds.add(id);
+              pendingEvents.delete(id);
+            }
+          }
+
+          renewalError.code = "OUTBOX_LEASE_LOST";
+          throw renewalError;
+        }
 
         for (const event of candidates) {
           const id = String(event.id);
