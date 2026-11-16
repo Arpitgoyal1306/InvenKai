@@ -35,13 +35,13 @@ async function createFixture() {
     ["outbox-long-lease-" + suffix],
   );
   const user = await testPool.query(
-    \`INSERT INTO users (name, email, password_hash, role)
-     VALUES ($1, $2, $3, $4) RETURNING id\`,
+    `INSERT INTO users (name, email, password_hash, role)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
     ["Outbox Long Lease Test", "outbox-long-" + suffix + "@example.test", "test-password-hash", "customer"],
   );
   const product = await testPool.query(
-    \`INSERT INTO products (category_id, name, sku, price)
-     VALUES ($1, $2, $3, $4) RETURNING id\`,
+    `INSERT INTO products (category_id, name, sku, price)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
     [category.rows[0].id, "Outbox Long Lease Product", "OUTBOX-LONG-" + suffix, "15.00"],
   );
   await testPool.query(
@@ -139,10 +139,10 @@ test(
       const orderIds = orders.map((order) => String(order.id));
 
       const outboxRows = await testPool.query(
-        \`SELECT id, order_id, claim_token, status
+        `SELECT id, order_id, claim_token, status
          FROM order_outbox
          WHERE order_id = ANY($1::bigint[])
-         ORDER BY id\`,
+         ORDER BY id`,
         [orderIds],
       );
       assert.equal(outboxRows.rowCount, 25);
@@ -182,11 +182,11 @@ test(
       );
 
       const beforeB = await testPool.query(
-        \`SELECT id, order_id, status, claim_token,
+        `SELECT id, order_id, status, claim_token,
                 locked_until > CURRENT_TIMESTAMP AS lease_valid
          FROM order_outbox
          WHERE order_id = ANY($1::bigint[])
-         ORDER BY id\`,
+         ORDER BY id`,
         [orderIds],
       );
       assert.equal(beforeB.rows.length, 25);
@@ -229,10 +229,10 @@ test(
       assert.deepEqual(enqueuedByA, orderIds);
 
       const finalRows = await testPool.query(
-        \`SELECT status, attempts
+        `SELECT status, attempts
          FROM order_outbox
          WHERE order_id = ANY($1::bigint[])
-         ORDER BY id\`,
+         ORDER BY id`,
         [orderIds],
       );
       assert.equal(finalRows.rowCount, 25);
