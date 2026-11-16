@@ -26,7 +26,7 @@ function createOrderOutboxDispatcher({
   redisManager = redis,
   batchSize = BATCH_SIZE,
   leaseSeconds = LEASE_SECONDS,
-  leaseRenewalIntervalMs = Math.max(100, Math.floor(leaseSeconds * 1000 / 3)),
+  leaseRenewalIntervalMs = Math.min(LEASE_RENEWAL_INTERVAL_MS, Math.max(100, Math.floor(leaseSeconds * 1000 / 3))),
   enqueueTimeoutMs = ENQUEUE_TIMEOUT_MS,
   queueCloseTimeoutMs = QUEUE_CLOSE_TIMEOUT_MS,
   logger = console,
@@ -254,7 +254,6 @@ function createOrderOutboxDispatcher({
         );
       });
     }, leaseRenewalIntervalMs);
-    renewalTimer.unref?.();
 
     try {
       for (const event of events) {
