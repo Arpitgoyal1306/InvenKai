@@ -205,6 +205,321 @@ test("uses exponential retry scheduling and records the error", async () => {
   await dispatcher.close();
 });
 
+test("stops a batch when lease renewal stalls without starting another renewal", async () => {
+  const renewalStarted = [];
+  const db = {
+    async query(sql) {
+      if (sql.includes("WITH candidates AS")) {
+        return { rows: [event(12, 312)] };
+      }
+
+      if (sql.includes("SET locked_until = CURRENT_TIMESTAMP")) {
+        renewalStarted.push(Date.now());
+        return new Promise(() => {});
+      }
+
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  };
+
+  const dispatcher = createOrderOutboxDispatcher({
+    db,
+    leaseRenewalIntervalMs: 5,
+    leaseRenewalTimeoutMs: 20,
+    redisManager: {
+      isRedisReady() { return true; },
+      async connectRedis() { return true; },
+    },
+    createQueue: async () => {
+      throw new Error("Queue must not be created after renewal stalls");
+    },
+  });
+
+  const result = await dispatcher.dispatchBatch();
+
+  assert.deepEqual(result, { claimed: 1, dispatched: 0, failed: 1 });
+  assert.equal(renewalStarted.length, 1);
+
+  await dispatcher.close();
+});
+
+test("stops an event when per-event renewal before enqueue stalls without enqueuing or releasing the claim", async () => {
+  const renewalStarted = [];
+  let enqueued = false;
+  let released = false;
+
+  const db = {
+    async query(sql, params) {
+      if (sql.includes("WITH candidates AS")) {
+        return { rows: [event(13, 313)] };
+      }
+
+      if (sql.includes("SET locked_until = CURRENT_TIMESTAMP")) {
+        renewalStarted.push(Date.now());
+        if (renewalStarted.length === 1) {
+          return { rows: (params?.[2] || []).map((id) => ({ id })) };
+        }
+        return new Promise(() => {});
+      }
+
+      if (sql.includes("SET status = 'pending'")) {
+        released = true;
+        return { rowCount: 0, rows: [] };
+      }
+
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  };
+
+  const dispatcher = createOrderOutboxDispatcher({
+    db,
+    leaseRenewalIntervalMs: 5,
+    leaseRenewalTimeoutMs: 20,
+    redisManager: {
+      isRedisReady() { return true; },
+      async connectRedis() { return true; },
+    },
+    createQueue: async () => ({
+      async enqueueOrderReceipt() {
+        enqueued = true;
+      },
+      async close() {},
+    }),
+  });
+
+  const startedAt = Date.now();
+  const result = await dispatcher.dispatchBatch();
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.deepEqual(result, { claimed: 1, dispatched: 0, failed: 1 });
+  assert.equal(renewalStarted.length, 2);
+  assert.equal(enqueued, false);
+  assert.equal(released, false);
+  assert.ok(elapsedMs < 500, `Expected dispatchBatch to finish near the renewal timeout, took ${elapsedMs}ms`);
+
+  await dispatcher.close();
+});
+
+test("waits for an in-flight batch renewal before enqueueing without starting an overlapping renewal", async () => {
+  const renewalCandidateSets = [];
+  const enqueued = [];
+  let inFlightRenewal = 0;
+  let maxConcurrentRenewals = 0;
+  let sharedRenewalResolved = false;
+  let resolveBatchRenewal;
+  let signalBatchRenewalStarted;
+  const batchRenewalStarted = new Promise((resolve) => {
+    signalBatchRenewalStarted = resolve;
+  });
+
+  const db = {
+    async query(sql, params) {
+      if (sql.includes("WITH candidates AS")) {
+        return { rows: [event(14, 314)] };
+      }
+
+      if (sql.includes("SET locked_until = CURRENT_TIMESTAMP")) {
+        const ids = (params?.[2] || []).map(String);
+        renewalCandidateSets.push(ids);
+        inFlightRenewal += 1;
+        maxConcurrentRenewals = Math.max(maxConcurrentRenewals, inFlightRenewal);
+
+        try {
+          // Query 1: initial batch renewal before ensureQueue().
+          // Query 2: background heartbeat renewal started while createQueue()
+          //          is pending; per-event renewal before enqueue waits on it.
+          if (renewalCandidateSets.length === 2) {
+            signalBatchRenewalStarted();
+            await new Promise((resolve) => {
+              resolveBatchRenewal = resolve;
+            });
+            sharedRenewalResolved = true;
+          }
+
+          return { rows: ids.map((id) => ({ id })) };
+        } finally {
+          inFlightRenewal -= 1;
+        }
+      }
+
+      if (sql.includes("SET status = 'dispatched'")) {
+        return { rowCount: 1, rows: [] };
+      }
+
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  };
+
+  const dispatcher = createOrderOutboxDispatcher({
+    db,
+    leaseRenewalIntervalMs: 5,
+    leaseRenewalTimeoutMs: 200,
+    redisManager: {
+      isRedisReady() { return true; },
+      async connectRedis() { return true; },
+    },
+    createQueue: async () => {
+      await batchRenewalStarted;
+      // Allow the in-flight batch renewal to settle shortly after the
+      // per-event renewal before enqueue begins waiting on renewalPromise.
+      setTimeout(() => resolveBatchRenewal(), 10);
+
+      return {
+        async enqueueOrderReceipt(orderId) {
+          assert.equal(
+            sharedRenewalResolved,
+            true,
+            "event must not be enqueued until the in-flight shared renewal confirms its ID",
+          );
+          enqueued.push(String(orderId));
+        },
+        async close() {},
+      };
+    },
+  });
+
+  const result = await dispatcher.dispatchBatch();
+
+  assert.deepEqual(result, { claimed: 1, dispatched: 1, failed: 0 });
+  assert.deepEqual(enqueued, ["314"]);
+  assert.equal(maxConcurrentRenewals, 1, "renewal queries must never overlap");
+  assert.deepEqual(renewalCandidateSets, [["14"], ["14"]]);
+
+  await dispatcher.close();
+});
+
+test("times out when per-event renewal waits on a shared renewal that never settles", async () => {
+  const renewalStarted = [];
+  let enqueued = false;
+  let released = false;
+  let signalSharedRenewalStarted;
+  const sharedRenewalStarted = new Promise((resolve) => {
+    signalSharedRenewalStarted = resolve;
+  });
+
+  const db = {
+    async query(sql, params) {
+      if (sql.includes("WITH candidates AS")) {
+        return { rows: [event(16, 316)] };
+      }
+
+      if (sql.includes("SET locked_until = CURRENT_TIMESTAMP")) {
+        renewalStarted.push(Date.now());
+        if (renewalStarted.length === 1) {
+          return { rows: (params?.[2] || []).map((id) => ({ id })) };
+        }
+        signalSharedRenewalStarted();
+        return new Promise(() => {});
+      }
+
+      if (sql.includes("SET status = 'pending'")) {
+        released = true;
+        return { rowCount: 0, rows: [] };
+      }
+
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  };
+
+  const dispatcher = createOrderOutboxDispatcher({
+    db,
+    leaseRenewalIntervalMs: 5,
+    leaseRenewalTimeoutMs: 25,
+    redisManager: {
+      isRedisReady() { return true; },
+      async connectRedis() { return true; },
+    },
+    createQueue: async () => {
+      await sharedRenewalStarted;
+      return {
+        async enqueueOrderReceipt() {
+          enqueued = true;
+        },
+        async close() {},
+      };
+    },
+  });
+
+  const startedAt = Date.now();
+  const result = await dispatcher.dispatchBatch();
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.deepEqual(result, { claimed: 1, dispatched: 0, failed: 1 });
+  assert.equal(renewalStarted.length, 2);
+  assert.equal(enqueued, false);
+  assert.equal(released, false);
+  assert.ok(elapsedMs < 500, `Expected dispatchBatch to finish near the renewal timeout, took ${elapsedMs}ms`);
+
+  await dispatcher.close();
+});
+
+test("does not enqueue when a shared renewal completes without returning the requested event ID", async () => {
+  const renewalCalls = [];
+  let enqueued = false;
+  let released = false;
+  let resolveSharedRenewal;
+  let signalSharedRenewalStarted;
+  const sharedRenewalStarted = new Promise((resolve) => {
+    signalSharedRenewalStarted = resolve;
+  });
+
+  const db = {
+    async query(sql, params) {
+      if (sql.includes("WITH candidates AS")) {
+        return { rows: [event(17, 317)] };
+      }
+
+      if (sql.includes("SET locked_until = CURRENT_TIMESTAMP")) {
+        renewalCalls.push((params?.[2] || []).map(String));
+        if (renewalCalls.length === 1) {
+          return { rows: (params?.[2] || []).map((id) => ({ id })) };
+        }
+        signalSharedRenewalStarted();
+        await new Promise((resolve) => {
+          resolveSharedRenewal = resolve;
+        });
+        return { rows: [] };
+      }
+
+      if (sql.includes("SET status = 'pending'")) {
+        released = true;
+        return { rowCount: 0, rows: [] };
+      }
+
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  };
+
+  const dispatcher = createOrderOutboxDispatcher({
+    db,
+    leaseRenewalIntervalMs: 5,
+    leaseRenewalTimeoutMs: 200,
+    redisManager: {
+      isRedisReady() { return true; },
+      async connectRedis() { return true; },
+    },
+    createQueue: async () => {
+      await sharedRenewalStarted;
+      setTimeout(() => resolveSharedRenewal(), 10);
+      return {
+        async enqueueOrderReceipt() {
+          enqueued = true;
+        },
+        async close() {},
+      };
+    },
+  });
+
+  const result = await dispatcher.dispatchBatch();
+
+  assert.deepEqual(result, { claimed: 1, dispatched: 0, failed: 1 });
+  assert.equal(renewalCalls.length, 2);
+  assert.equal(enqueued, false);
+  assert.equal(released, false);
+
+  await dispatcher.close();
+});
+
 test("does not overwrite an outbox lease reclaimed during a slow enqueue", async () => {
   const queries = [];
   let newClaimWasMade = false;
@@ -371,6 +686,30 @@ function pause(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Restrict only the dispatcher claim query to one fixture order. The shared
+// test database can contain unrelated outbox rows, but the SQL's ordering,
+// SKIP LOCKED, lease expiry and claim-token logic stay unchanged.
+function scopeClaimQueryToOrder(sql, params, orderId) {
+  if (!sql.includes("WITH candidates AS")) return [sql, params];
+
+  const scopedSql = sql.replace(
+    "FROM order_outbox\n         WHERE",
+    "FROM order_outbox\n         WHERE order_id = ANY($4::bigint[]) AND (",
+  ).replace(
+    "           OR\n           (status = 'processing' AND locked_until < CURRENT_TIMESTAMP)\n         ORDER BY id",
+    "           OR\n           (status = 'processing' AND locked_until < CURRENT_TIMESTAMP)\n           )\n         ORDER BY id",
+  );
+
+  if (
+    !scopedSql.includes("order_id = ANY($4::bigint[]) AND (") ||
+    !scopedSql.includes("           )\n         ORDER BY id")
+  ) {
+    throw new Error("Could not scope the outbox claim query to the fixture order");
+  }
+
+  return [scopedSql, [...params, [orderId]]];
+}
+
 async function waitForQueueJob(queue, jobId, state, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
 
@@ -490,8 +829,15 @@ test("two real dispatchers reclaim an expired lease without stale updates or dup
     });
     await workerResources.worker.waitUntilReady();
 
+    const dbForDispatcherA = {
+      async query(sql, params) {
+        const [scopedSql, scopedParams] = scopeClaimQueryToOrder(sql, params, fixture.orderId);
+        return integrationPool.query(scopedSql, scopedParams);
+      },
+    };
+
     dispatcherA = createOrderOutboxDispatcher({
-      db: integrationPool,
+      db: dbForDispatcherA,
       redisManager: dispatcherRedisA,
       leaseSeconds: 1,
       batchSize: 1,
@@ -512,7 +858,8 @@ test("two real dispatchers reclaim an expired lease without stale updates or dup
 
     const dbForDispatcherB = {
       async query(sql, params) {
-        const result = await integrationPool.query(sql, params);
+        const [scopedSql, scopedParams] = scopeClaimQueryToOrder(sql, params, fixture.orderId);
+        const result = await integrationPool.query(scopedSql, scopedParams);
         if (sql.includes("WITH candidates AS") && result.rows[0]) {
           claimTokenB = result.rows[0].claim_token;
         }
@@ -671,7 +1018,38 @@ test("SIGTERM bounds a stalled enqueue, releases its claim, and closes Redis/Pos
   };
 
   const shutdownDb = {
-    async query(sql, params) {
+    async query(sql, params = []) {
+      if (sql.includes("WITH candidates AS")) {
+        const result = await shutdownPool.query(
+          `WITH candidates AS (
+            SELECT id
+            FROM order_outbox
+            WHERE order_id = $4
+              AND (
+                (status = 'pending' AND available_at <= CURRENT_TIMESTAMP)
+                OR
+                (status = 'processing' AND locked_until < CURRENT_TIMESTAMP)
+              )
+            ORDER BY id
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED
+          )
+          UPDATE order_outbox AS events
+          SET status = 'processing',
+              attempts = attempts + 1,
+              locked_until = CURRENT_TIMESTAMP + ($2 * INTERVAL '1 second'),
+              claim_token = $3::uuid,
+              updated_at = CURRENT_TIMESTAMP
+          FROM candidates
+          WHERE events.id = candidates.id
+          RETURNING events.id, events.order_id, events.payload,
+                    events.attempts, events.claim_token`,
+          [...params, fixture.orderId],
+        );
+
+        return result;
+      }
+
       return shutdownPool.query(sql, params);
     },
     async end() {
