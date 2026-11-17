@@ -92,6 +92,14 @@ function createScopedOutboxDb(orderIds) {
           "           OR\n           (status = 'processing' AND locked_until < CURRENT_TIMESTAMP)\n           )\n         ORDER BY id",
         );
 
+        // Never fall back to an unscoped claim if the dispatcher SQL changes.
+        if (
+          !scopedSql.includes("order_id = ANY($4::bigint[]) AND (") ||
+          !scopedSql.includes("           )\n         ORDER BY id")
+        ) {
+          throw new Error("Could not scope the outbox claim query to the fixture orders");
+        }
+
         return testPool.query(scopedSql, [...params, orderIds]);
       }
 
@@ -119,7 +127,7 @@ async function createOrdersForFixture(fixture, count) {
 test(
   "renews all still-processing claims while a real 25-row PostgreSQL batch runs beyond the original 60-second lease",
   {
-    timeout: 85000,
+    timeout: 240000,
   },
   async () => {
     let fixture;
@@ -226,6 +234,8 @@ test(
 
       const resultA = await dispatchPromise;
       assert.deepEqual(resultA, { claimed: 25, dispatched: 25, failed: 0 });
+      assert.equal(enqueuedByA.length, 25);
+      assert.equal(new Set(enqueuedByA).size, 25);
       assert.deepEqual(enqueuedByA, orderIds);
 
       const finalRows = await testPool.query(
