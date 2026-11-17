@@ -300,6 +300,105 @@ test("stops an event when per-event renewal before enqueue stalls without enqueu
   await dispatcher.close();
 });
 
+
+
+test("heartbeat renews remaining batch claims after joining a per-event renewal", async () => {
+  const renewalCandidateSets = [];
+  let signalPerEventRenewalStarted;
+  let signalRemainingRenewalStarted;
+  let releaseEnqueue;
+  const perEventRenewalStarted = new Promise((resolve) => {
+    signalPerEventRenewalStarted = resolve;
+  });
+  const remainingRenewalStarted = new Promise((resolve) => {
+    signalRemainingRenewalStarted = resolve;
+  });
+  const enqueueGate = new Promise((resolve) => {
+    releaseEnqueue = resolve;
+  });
+
+  const db = {
+    async query(sql, params) {
+      if (sql.includes("WITH candidates AS")) {
+        return { rows: [event(21, 421), event(22, 422)] };
+      }
+
+      if (sql.includes("SET locked_until = CURRENT_TIMESTAMP")) {
+        const ids = (params?.[2] || []).map(String);
+        renewalCandidateSets.push(ids);
+
+        if (renewalCandidateSets.length === 2) {
+          signalPerEventRenewalStarted();
+          // Keep the per-event renewal in flight until the heartbeat joins it.
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+
+        if (renewalCandidateSets.length === 3) {
+          signalRemainingRenewalStarted();
+        }
+
+        return { rows: ids.map((id) => ({ id })) };
+      }
+
+      if (sql.includes("SET status = 'dispatched'")) {
+        return { rowCount: 1, rows: [] };
+      }
+
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  };
+
+  const dispatcher = createOrderOutboxDispatcher({
+    db,
+    leaseRenewalIntervalMs: 100,
+    leaseRenewalTimeoutMs: 1000,
+    enqueueTimeoutMs: 2000,
+    redisManager: {
+      isRedisReady() { return true; },
+      async connectRedis() { return true; },
+    },
+    createQueue: async () => ({
+      async enqueueOrderReceipt(orderId) {
+        if (String(orderId) === "421") {
+          await enqueueGate;
+        }
+      },
+      async close() {},
+    }),
+  });
+
+  const dispatchPromise = dispatcher.dispatchBatch();
+  await perEventRenewalStarted;
+
+  try {
+    await Promise.race([
+      remainingRenewalStarted,
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error("Heartbeat did not renew the remaining batch claim")),
+        1000,
+      )),
+    ]);
+
+    assert.deepEqual(
+      renewalCandidateSets[2],
+      ["22"],
+      "heartbeat must renew the still-pending event after sharing the event-21 renewal",
+    );
+  } finally {
+    releaseEnqueue();
+  }
+
+  const result = await dispatchPromise;
+  assert.deepEqual(result, { claimed: 2, dispatched: 2, failed: 0 });
+  assert.deepEqual(renewalCandidateSets.slice(0, 3), [
+    ["21", "22"],
+    ["21"],
+    ["22"],
+  ]);
+
+  await dispatcher.close();
+});
+
 test("waits for an in-flight batch renewal before enqueueing without starting an overlapping renewal", async () => {
   const renewalCandidateSets = [];
   const enqueued = [];

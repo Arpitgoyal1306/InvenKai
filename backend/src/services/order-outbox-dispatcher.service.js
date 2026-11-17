@@ -303,10 +303,8 @@ function createOrderOutboxDispatcher({
             }
           }
 
-          if (candidates === null) {
-            return confirmedIds;
-          }
-
+          // A heartbeat may have joined a renewal started for only one
+          // event. Keep looping so it also renews every other pending claim.
           continue;
         }
 
