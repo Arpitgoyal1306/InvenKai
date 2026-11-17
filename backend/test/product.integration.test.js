@@ -1,8 +1,39 @@
-const { test } = require("node:test");
+require("dotenv").config();
+
+if (process.env.NODE_ENV !== "test") {
+  throw new Error(
+    "product.integration.test.js must run with NODE_ENV=test",
+  );
+}
+
+if (!process.env.TEST_DATABASE_URL) {
+  throw new Error("TEST_DATABASE_URL is required");
+}
+
+const { test, before } = require("node:test");
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
 
 const pool = require("../src/config/database");
+const testDatabaseTarget = pool.normalizeDatabaseIdentity(
+  process.env.TEST_DATABASE_URL,
+);
+const devDatabaseTarget = pool.normalizeDatabaseIdentity(
+  process.env.DATABASE_URL,
+);
+
+if (!testDatabaseTarget?.databaseName) {
+  throw new Error("TEST_DATABASE_URL must specify a database name");
+}
+
+if (
+  devDatabaseTarget &&
+  testDatabaseTarget.key === devDatabaseTarget.key
+) {
+  throw new Error(
+    "TEST_DATABASE_URL must point to a different database from DATABASE_URL",
+  );
+}
 
 const {
   createProduct,
@@ -11,6 +42,30 @@ const {
   updateProduct,
   deleteProduct,
 } = require("../src/services/product.service");
+
+before(async () => {
+  const result = await pool.query("SELECT current_database() AS database_name");
+  const actualDatabaseName = result.rows[0]?.database_name;
+
+  if (
+    !actualDatabaseName ||
+    actualDatabaseName !== testDatabaseTarget.databaseName
+  ) {
+    throw new Error(
+      `Test database identity mismatch: expected "${testDatabaseTarget.databaseName}", connected to "${actualDatabaseName || "unknown"}"`,
+    );
+  }
+
+  if (
+    devDatabaseTarget?.databaseName &&
+    testDatabaseTarget.key.split("/")[0] === devDatabaseTarget.key.split("/")[0] &&
+    actualDatabaseName === devDatabaseTarget.databaseName
+  ) {
+    throw new Error(
+      "Refusing to run integration tests against the development database",
+    );
+  }
+});
 
 async function createCategory() {
   const uniqueId = randomUUID();
@@ -111,8 +166,23 @@ test("creates a product in PostgreSQL", async () => {
 
     assert.equal(result.rows.length, 1);
     assert.equal(result.rows[0].sku, `CREATE-${uniqueId}`);
+
+    const inventoryResult = await pool.query(
+      `SELECT product_id, quantity
+       FROM inventory
+       WHERE product_id = $1`,
+      [product.id],
+    );
+
+    assert.equal(inventoryResult.rows.length, 1);
+    assert.equal(String(inventoryResult.rows[0].product_id), String(product.id));
+    assert.equal(inventoryResult.rows[0].quantity, 0);
   } finally {
     if (productId) {
+      await pool.query("DELETE FROM inventory WHERE product_id = $1", [
+        productId,
+      ]);
+
       await pool.query("DELETE FROM products WHERE id = $1", [productId]);
     }
 
@@ -173,12 +243,32 @@ test("retrieves a product from PostgreSQL by ID", async () => {
 // 5. GET ALL PRODUCTS
 test("retrieves products with pagination from PostgreSQL", async () => {
   const fixture = await createProductFixture();
+  const client = await pool.connect();
 
   try {
-    const products = await getProducts(10, 0);
+    // Keep the count and page query on one stable snapshot while other
+    // integration tests modify the shared products table.
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+
+    // Fetch the product directly to establish its position.
+    const positionResult = await client.query(
+      `SELECT COUNT(*) AS position
+       FROM products
+       WHERE id < $1`,
+      [fixture.productId],
+    );
+
+    const position = Number(positionResult.rows[0].position);
+
+    // Calculate the page containing our fixture.
+    const offset = Math.floor(position / 10) * 10;
+
+    const totalResult = await client.query("SELECT COUNT(*) AS total FROM products");
+    const products = await getProducts(10, offset, client);
 
     assert.ok(Array.isArray(products));
     assert.ok(products.length <= 10);
+    assert.ok(Number(totalResult.rows[0].total) > position);
 
     const ids = products.map((product) => BigInt(product.id));
 
@@ -192,9 +282,15 @@ test("retrieves products with pagination from PostgreSQL", async () => {
       ),
     );
   } finally {
+    try {
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
     await cleanupProductFixture(fixture);
   }
 });
+
 
 // 6. UPDATE PRODUCT
 test("updates a product and persists changes in PostgreSQL", async () => {

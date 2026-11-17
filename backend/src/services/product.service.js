@@ -126,8 +126,13 @@ async function createProduct(productData) {
 
   const { category_id, name, description = null, sku, price } = productData;
 
+  const client = await pool.connect();
+  let operation = "product";
+
   try {
-    const result = await pool.query(
+    await client.query("BEGIN");
+
+    const result = await client.query(
       `INSERT INTO products (
         category_id,
         name,
@@ -140,31 +145,55 @@ async function createProduct(productData) {
       [
         category_id,
         name.trim(),
-        description?.trim() || null,
+        description === null ? null : description.trim() || null,
         sku.trim(),
         price,
       ],
     );
 
-    return result.rows[0];
+    const product = result.rows[0];
+
+    if (!product) {
+      throw new Error("Product creation returned no record");
+    }
+
+    operation = "inventory";
+
+    await client.query(
+      `INSERT INTO inventory (product_id, quantity)
+       VALUES ($1, 0)`,
+      [product.id],
+    );
+
+    await client.query("COMMIT");
+
+    return product;
   } catch (error) {
-    if (error.code === "23505") {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      error.rollbackError = rollbackError;
+    }
+
+    if (operation === "product" && error.code === "23505") {
       throw createError("A product with this SKU already exists", 409);
     }
 
-    if (error.code === "23503") {
+    if (operation === "product" && error.code === "23503") {
       throw createError("The specified category does not exist", 400);
     }
 
     throw error;
+  } finally {
+    client.release();
   }
 }
 
 // GET ALL PRODUCTS
-async function getProducts(limit = 10, offset = 0) {
+async function getProducts(limit = 10, offset = 0, db = pool) {
   validateProductPagination(limit, offset);
 
-  const result = await pool.query(
+  const result = await db.query(
     `SELECT *
      FROM products
      ORDER BY id
@@ -193,8 +222,6 @@ async function getProductById(id) {
 // UPDATE PRODUCT
 async function updateProduct(id, productData) {
   validateProductId(id);
-
-  // Validate fields supplied in the PATCH request.
   validateProductData(productData, ALLOWED_PRODUCT_FIELDS);
 
   const client = await pool.connect();
@@ -202,7 +229,6 @@ async function updateProduct(id, productData) {
   try {
     await client.query("BEGIN");
 
-    // Lock the product row to prevent concurrent updates.
     const existingResult = await client.query(
       `SELECT *
        FROM products
@@ -217,7 +243,6 @@ async function updateProduct(id, productData) {
 
     const existingProduct = existingResult.rows[0];
 
-    // Merge existing values with the supplied fields.
     const updatedProduct = {
       category_id: existingProduct.category_id,
       name: existingProduct.name,
@@ -227,7 +252,6 @@ async function updateProduct(id, productData) {
       ...productData,
     };
 
-    // Validate the complete product after merging.
     validateProductData(updatedProduct, ALLOWED_PRODUCT_FIELDS, true);
 
     const result = await client.query(
@@ -243,7 +267,9 @@ async function updateProduct(id, productData) {
       [
         updatedProduct.category_id,
         updatedProduct.name.trim(),
-        updatedProduct.description?.trim() || null,
+        updatedProduct.description === null
+          ? null
+          : updatedProduct.description.trim() || null,
         updatedProduct.sku.trim(),
         updatedProduct.price,
         id,
@@ -254,13 +280,10 @@ async function updateProduct(id, productData) {
 
     return result.rows[0];
   } catch (error) {
-    // Attempt rollback without replacing the original error.
     try {
       await client.query("ROLLBACK");
     } catch (rollbackError) {
-      if (error instanceof Error) {
-        error.rollbackError = rollbackError;
-      }
+      error.rollbackError = rollbackError;
     }
 
     if (error.code === "23505") {
