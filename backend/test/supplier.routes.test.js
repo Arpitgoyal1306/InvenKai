@@ -272,7 +272,7 @@ test("PATCH suppliers updates a supplier for inventory manager", async () => {
     query: async (sql) => {
       queryCount++;
 
-      if (/SELECT/i.test(sql)) {
+      if (sql.includes("SELECT")) {
         return {
           rows: [{
             ...updatedSupplier,
@@ -281,7 +281,7 @@ test("PATCH suppliers updates a supplier for inventory manager", async () => {
         };
       }
 
-      if (/UPDATE suppliers/i.test(sql)) {
+      if (sql.includes("UPDATE suppliers")) {
         return { rows: [updatedSupplier] };
       }
 
@@ -325,7 +325,7 @@ test("PATCH suppliers updates a supplier for admin", async () => {
     query: async (sql) => {
       queryCount++;
 
-      if (/SELECT/i.test(sql)) {
+      if (sql.includes("SELECT")) {
         return {
           rows: [{
             id: 1,
@@ -338,7 +338,7 @@ test("PATCH suppliers updates a supplier for admin", async () => {
         };
       }
 
-      if (/UPDATE suppliers/i.test(sql)) {
+      if (sql.includes("UPDATE suppliers")) {
         return { rows: [updatedSupplier] };
       }
 
@@ -399,7 +399,7 @@ test("PATCH suppliers returns 404 when supplier does not exist", async () => {
     query: async (sql) => {
       queryCount++;
 
-      if (/SELECT/i.test(sql)) {
+      if (sql.includes("SELECT")) {
         return { rows: [] };
       }
 
@@ -450,9 +450,8 @@ test("DELETE suppliers soft deletes a supplier for admin", async () => {
     assert.equal(response.body.message, "Supplier deleted successfully");
     assert.equal(response.body.supplier.is_active, false);
 
-    assert.match(
-      queryMock.mock.calls[0].arguments[0],
-      /is_active = FALSE/i
+    assert.ok(
+      queryMock.mock.calls[0].arguments[0].includes("is_active = FALSE")
     );
 
     assert.equal(queryMock.mock.calls.length, 1);
