@@ -172,14 +172,16 @@ async function createProduct(productData) {
     try {
       await client.query("ROLLBACK");
     } catch (rollbackError) {
-      error.rollbackError = rollbackError;
+      if (error && typeof error === "object") {
+        error.rollbackError = rollbackError;
+      }
     }
 
-    if (operation === "product" && error.code === "23505") {
+    if (operation === "product" && error?.code === "23505") {
       throw createError("A product with this SKU already exists", 409);
     }
 
-    if (operation === "product" && error.code === "23503") {
+    if (operation === "product" && error?.code === "23503") {
       throw createError("The specified category does not exist", 400);
     }
 
@@ -283,14 +285,16 @@ async function updateProduct(id, productData) {
     try {
       await client.query("ROLLBACK");
     } catch (rollbackError) {
-      error.rollbackError = rollbackError;
+      if (error && typeof error === "object") {
+        error.rollbackError = rollbackError;
+      }
     }
 
-    if (error.code === "23505") {
+    if (error?.code === "23505") {
       throw createError("A product with this SKU already exists", 409);
     }
 
-    if (error.code === "23503") {
+    if (error?.code === "23503") {
       throw createError("The specified category does not exist", 400);
     }
 
@@ -318,11 +322,11 @@ async function deleteProduct(id) {
 
     return result.rows[0];
   } catch (error) {
-    if (error.statusCode) {
+    if (error?.statusCode) {
       throw error;
     }
 
-    if (error.code === "23503" || error.code === "23001") {
+    if (error?.code === "23503" || error?.code === "23001") {
       throw createError(
         "Cannot delete product because it has associated inventory, transaction history, or supplier records",
         409,

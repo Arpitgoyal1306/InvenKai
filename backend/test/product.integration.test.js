@@ -13,27 +13,9 @@ if (!process.env.TEST_DATABASE_URL) {
 const { test, before } = require("node:test");
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
+const path = require("node:path");
 
 const pool = require("../src/config/database");
-const testDatabaseTarget = pool.normalizeDatabaseIdentity(
-  process.env.TEST_DATABASE_URL,
-);
-const devDatabaseTarget = pool.normalizeDatabaseIdentity(
-  process.env.DATABASE_URL,
-);
-
-if (!testDatabaseTarget?.databaseName) {
-  throw new Error("TEST_DATABASE_URL must specify a database name");
-}
-
-if (
-  devDatabaseTarget &&
-  testDatabaseTarget.key === devDatabaseTarget.key
-) {
-  throw new Error(
-    "TEST_DATABASE_URL must point to a different database from DATABASE_URL",
-  );
-}
 
 const {
   createProduct,
@@ -44,27 +26,7 @@ const {
 } = require("../src/services/product.service");
 
 before(async () => {
-  const result = await pool.query("SELECT current_database() AS database_name");
-  const actualDatabaseName = result.rows[0]?.database_name;
-
-  if (
-    !actualDatabaseName ||
-    actualDatabaseName !== testDatabaseTarget.databaseName
-  ) {
-    throw new Error(
-      `Test database identity mismatch: expected "${testDatabaseTarget.databaseName}", connected to "${actualDatabaseName || "unknown"}"`,
-    );
-  }
-
-  if (
-    devDatabaseTarget?.databaseName &&
-    testDatabaseTarget.key.split("/")[0] === devDatabaseTarget.key.split("/")[0] &&
-    actualDatabaseName === devDatabaseTarget.databaseName
-  ) {
-    throw new Error(
-      "Refusing to run integration tests against the development database",
-    );
-  }
+  await pool.verifyDatabaseIdentity();
 });
 
 async function createCategory() {
@@ -462,5 +424,144 @@ test("prevents deletion of a product associated with a supplier", async () => {
     );
   } finally {
     await cleanupProductFixture(fixture);
+  }
+});
+
+// 13. BACKFILL MIGRATION IDEMPOTENCY & PRESERVATION
+test("backfill migration creates missing inventory records and preserves existing quantities", async () => {
+  const { jiti, MigrationBuilder } = await import("node-pg-migrate");
+  const migrationPath = path.resolve(
+    __dirname,
+    "../migrations/1794300000000_backfill-product-inventory.js",
+  );
+  const backfillMigration = await jiti.import(migrationPath);
+
+  const client = await pool.connect();
+
+  async function applyBackfillMigration(direction = "up") {
+    const pgm = new MigrationBuilder({}, {}, false, console);
+    await backfillMigration[direction](pgm);
+    const sqlSteps = pgm.getSqlSteps();
+
+    for (const sql of sqlSteps) {
+      await client.query(sql);
+    }
+
+    return sqlSteps;
+  }
+
+  try {
+    // Run inside an isolated transaction with session-local temporary tables
+    // cloned from public schema so the migration SQL executes against real
+    // PostgreSQL table definitions and constraints without modifying any
+    // shared rows in public.products or public.inventory.
+    await client.query("BEGIN");
+
+    await client.query(`
+      CREATE TEMP SEQUENCE temp_categories_id_seq;
+      CREATE TEMP SEQUENCE temp_products_id_seq;
+      CREATE TEMP SEQUENCE temp_inventory_id_seq;
+
+      CREATE TEMP TABLE categories (
+        LIKE public.categories INCLUDING ALL
+      ) ON COMMIT DROP;
+      ALTER TABLE pg_temp.categories
+        ALTER COLUMN id SET DEFAULT nextval('temp_categories_id_seq');
+
+      CREATE TEMP TABLE products (
+        LIKE public.products INCLUDING ALL,
+        FOREIGN KEY (category_id) REFERENCES pg_temp.categories(id) ON DELETE RESTRICT
+      ) ON COMMIT DROP;
+      ALTER TABLE pg_temp.products
+        ALTER COLUMN id SET DEFAULT nextval('temp_products_id_seq');
+
+      CREATE TEMP TABLE inventory (
+        LIKE public.inventory INCLUDING ALL,
+        FOREIGN KEY (product_id) REFERENCES pg_temp.products(id) ON DELETE RESTRICT
+      ) ON COMMIT DROP;
+      ALTER TABLE pg_temp.inventory
+        ALTER COLUMN id SET DEFAULT nextval('temp_inventory_id_seq');
+    `);
+
+    const categoryResult = await client.query(
+      `INSERT INTO categories (name)
+       VALUES ('Migration Test Category')
+       RETURNING id`,
+    );
+    const categoryId = categoryResult.rows[0].id;
+
+    const productsResult = await client.query(
+      `INSERT INTO products (category_id, name, description, sku, price)
+       VALUES ($1, 'Product Missing Inventory', 'Test', 'MIG-NO-INV', 100),
+              ($1, 'Product With Inventory', 'Test', 'MIG-HAS-INV', 200)
+       RETURNING id`,
+      [categoryId],
+    );
+
+    const productWithoutInventoryId = productsResult.rows[0].id;
+    const productWithInventoryId = productsResult.rows[1].id;
+
+    await client.query(
+      `INSERT INTO inventory (product_id, quantity)
+       VALUES ($1, 25)`,
+      [productWithInventoryId],
+    );
+
+    const firstRunSteps = await applyBackfillMigration("up");
+    assert.ok(firstRunSteps.length > 0);
+
+    const inv1 = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithoutInventoryId],
+    );
+    assert.equal(inv1.rows.length, 1);
+    assert.equal(inv1.rows[0].quantity, 0);
+
+    const inv2 = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithInventoryId],
+    );
+    assert.equal(inv2.rows.length, 1);
+    assert.equal(inv2.rows[0].quantity, 25);
+
+    const secondRunSteps = await applyBackfillMigration("up");
+    assert.ok(secondRunSteps.length > 0);
+
+    const inv1After = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithoutInventoryId],
+    );
+    assert.equal(inv1After.rows.length, 1);
+    assert.equal(inv1After.rows[0].quantity, 0);
+
+    const inv2After = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithInventoryId],
+    );
+    assert.equal(inv2After.rows.length, 1);
+    assert.equal(inv2After.rows[0].quantity, 25);
+
+    const downSteps = await applyBackfillMigration("down");
+    assert.deepEqual(downSteps, []);
+
+    const inv1AfterDown = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithoutInventoryId],
+    );
+    assert.equal(inv1AfterDown.rows.length, 1);
+    assert.equal(inv1AfterDown.rows[0].quantity, 0);
+
+    const inv2AfterDown = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithInventoryId],
+    );
+    assert.equal(inv2AfterDown.rows.length, 1);
+    assert.equal(inv2AfterDown.rows[0].quantity, 25);
+  } finally {
+    try {
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
   }
 });

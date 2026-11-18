@@ -727,3 +727,187 @@ test("deleteProduct uses parameterized SQL", async () => {
     queryMock.mock.restore();
   }
 });
+
+test("createProduct, updateProduct, and deleteProduct preserve null and primitive thrown values", async () => {
+  const createClientMock = createProductClientMock(async (sql) => {
+    if (sql.includes("INSERT INTO products")) {
+      throw null;
+    }
+    if (sql.includes("ROLLBACK")) {
+      throw new Error("Rollback failed");
+    }
+    return { rows: [] };
+  });
+
+  try {
+    await assert.rejects(
+      createProduct(validProductData),
+      (err) => err === null,
+    );
+    assert.equal(createClientMock.wasReleased(), true);
+  } finally {
+    createClientMock.connectMock.mock.restore();
+  }
+
+  const updateClientMock = createProductClientMock(async (sql) => {
+    if (sql.includes("SELECT")) {
+      throw "primitive-update-error";
+    }
+    if (sql.includes("ROLLBACK")) {
+      throw new Error("Rollback failed");
+    }
+    return { rows: [] };
+  });
+
+  try {
+    await assert.rejects(
+      updateProduct("1", { name: "Updated Laptop" }),
+      (err) => err === "primitive-update-error",
+    );
+    assert.equal(updateClientMock.wasReleased(), true);
+  } finally {
+    updateClientMock.connectMock.mock.restore();
+  }
+
+  const deleteQueryMock = mock.method(pool, "query", async () => {
+    throw null;
+  });
+
+  try {
+    await assert.rejects(
+      deleteProduct("1"),
+      (err) => err === null,
+    );
+  } finally {
+    deleteQueryMock.mock.restore();
+  }
+});
+
+// --------------------------------------------------
+// DATABASE CONFIGURATION AND TEST ISOLATION TESTS
+// --------------------------------------------------
+
+test("normalizeDatabaseIdentity parses valid connection strings into host, port, databaseName and key", () => {
+  const identity = pool.normalizeDatabaseIdentity(
+    "postgres://user:secret@db.example.com:5433/invenkai_test?sslmode=require",
+  );
+
+  assert.equal(identity.host, "db.example.com");
+  assert.equal(identity.port, "5433");
+  assert.equal(identity.databaseName, "invenkai_test");
+  assert.equal(identity.key, "db.example.com:5433/invenkai_test");
+});
+
+test("normalizeDatabaseIdentity rejects missing or invalid connection strings without logging credentials", () => {
+  assert.equal(pool.normalizeDatabaseIdentity(null), null);
+  assert.equal(pool.normalizeDatabaseIdentity(undefined), null);
+
+  assert.throws(
+    () => pool.normalizeDatabaseIdentity("not-a-valid-url"),
+    { message: "Invalid PostgreSQL connection string format" },
+  );
+
+  assert.throws(
+    () => pool.normalizeDatabaseIdentity("postgres://user:secret@localhost:5432/"),
+    { message: "PostgreSQL connection string must include a database name" },
+  );
+});
+
+test("resolveDatabaseConfig enforces TEST_DATABASE_URL in test environment and prevents dev DB reuse", () => {
+  assert.throws(
+    () =>
+      pool.resolveDatabaseConfig({
+        NODE_ENV: "test",
+        DATABASE_URL: "postgres://user:pass@localhost:5432/invenkai_dev",
+      }),
+    { message: "TEST_DATABASE_URL is required in the test environment" },
+  );
+
+  assert.throws(
+    () =>
+      pool.resolveDatabaseConfig({
+        NODE_ENV: "test",
+        TEST_DATABASE_URL: "postgres://user:pass@localhost:5432/invenkai_db",
+        DATABASE_URL: "postgres://user:pass@localhost:5432/invenkai_db",
+      }),
+    {
+      message:
+        "TEST_DATABASE_URL must point to a different database from DATABASE_URL",
+    },
+  );
+
+  const config = pool.resolveDatabaseConfig({
+    NODE_ENV: "test",
+    TEST_DATABASE_URL: "postgres://user:pass@localhost:5432/invenkai_test",
+    DATABASE_URL: "postgres://user:pass@localhost:5432/invenkai_dev",
+  });
+  assert.equal(config.isTestEnvironment, true);
+  assert.equal(config.expectedDatabaseName, "invenkai_test");
+
+  const prodConfig = pool.resolveDatabaseConfig({
+    NODE_ENV: "production",
+    DATABASE_URL: "postgres://user:pass@localhost:5432/invenkai_prod",
+  });
+  assert.equal(prodConfig.isTestEnvironment, false);
+  assert.equal(prodConfig.expectedDatabaseName, "invenkai_prod");
+});
+
+test("verifyDatabaseIdentity confirms connected database name and guards against mismatch", async () => {
+  const fakePool = {
+    expectedDatabaseName: "invenkai_test",
+    devDatabaseName: "invenkai_dev",
+    query: async () => ({ rows: [{ database_name: "invenkai_test" }] }),
+  };
+
+  const name = await pool.verifyDatabaseIdentity(fakePool);
+  assert.equal(name, "invenkai_test");
+
+  const mismatchPool = {
+    expectedDatabaseName: "invenkai_test",
+    devDatabaseName: "invenkai_dev",
+    query: async () => ({ rows: [{ database_name: "wrong_db" }] }),
+  };
+
+  await assert.rejects(
+    pool.verifyDatabaseIdentity(mismatchPool),
+    /Database identity mismatch/,
+  );
+
+  const devLeakPool = {
+    expectedDatabaseName: "invenkai_dev",
+    targetIdentity: {
+      host: "db.example.com",
+      port: "5432",
+      databaseName: "invenkai_dev",
+    },
+    devIdentity: {
+      host: "db.example.com",
+      port: "5432",
+      databaseName: "invenkai_dev",
+    },
+    query: async () => ({ rows: [{ database_name: "invenkai_dev" }] }),
+  };
+
+  await assert.rejects(
+    pool.verifyDatabaseIdentity(devLeakPool),
+    /Refusing to run tests against the development database/,
+  );
+
+  const separateHostPool = {
+    expectedDatabaseName: "neondb",
+    targetIdentity: {
+      host: "localhost",
+      port: "5432",
+      databaseName: "neondb",
+    },
+    devIdentity: {
+      host: "ep-dev.neon.tech",
+      port: "5432",
+      databaseName: "neondb",
+    },
+    query: async () => ({ rows: [{ database_name: "neondb" }] }),
+  };
+
+  const separateHostName = await pool.verifyDatabaseIdentity(separateHostPool);
+  assert.equal(separateHostName, "neondb");
+});
