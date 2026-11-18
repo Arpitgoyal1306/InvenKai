@@ -36,13 +36,14 @@ async function waitForJobState(queue, jobId, expectedState, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    const job = await queue.getJob(jobId);
-    if (job) {
-      const state = await job.getState();
-      if (state === expectedState) return job;
-      if (state === "failed") {
-        throw new Error(`BullMQ job ${jobId} failed: ${job.failedReason}`);
-      }
+    const state = await queue.getJobState(jobId);
+    if (state === expectedState) {
+      const job = await queue.getJob(jobId);
+      if (job) return job;
+    }
+    if (state === "failed" && expectedState !== "failed") {
+      const failedJob = await queue.getJob(jobId);
+      throw new Error(`BullMQ job ${jobId} failed: ${failedJob?.failedReason}`);
     }
     await delay(100);
   }
@@ -138,6 +139,7 @@ test(
     let dispatcher;
     let workerResources;
     let inspectionQueue;
+    const scopedOrderIds = [];
 
     try {
       fixture = await createFixture();
@@ -152,7 +154,7 @@ test(
       await workerResources.worker.waitUntilReady();
 
       dispatcher = createOrderOutboxDispatcher({
-        db: testPool,
+        db: createScopedOutboxDb(scopedOrderIds),
         redisManager: dispatcherRedis,
         createQueue: () => createOrderQueue({ redisManager: dispatcherRedis }),
       });
@@ -163,6 +165,8 @@ test(
         testPool,
         async () => {},
       );
+      // The scoped claim query reads this array when each batch runs.
+      scopedOrderIds.push(String(order.id));
 
       // Dispatch batches until this order's outbox row is confirmed published.
       const deadline = Date.now() + 15000;
@@ -398,7 +402,7 @@ test(
       await workerResources.worker.waitUntilReady();
 
       dispatcher = createOrderOutboxDispatcher({
-        db: testPool,
+        db: createScopedOutboxDb([String(order.id)]),
         redisManager: recoverableRedis,
         createQueue: () => createOrderQueue({ redisManager: recoverableRedis }),
       });
@@ -467,6 +471,15 @@ function createScopedOutboxDb(orderIds, observedQueries = []) {
           "           OR\n           (status = 'processing' AND locked_until < CURRENT_TIMESTAMP)\n         ORDER BY id",
           "           OR\n           (status = 'processing' AND locked_until < CURRENT_TIMESTAMP)\n           )\n         ORDER BY id",
         );
+
+        // Never fall back to an unscoped claim if the dispatcher SQL changes.
+        if (
+          !scopedSql.includes("order_id = ANY($4::bigint[]) AND (") ||
+          !scopedSql.includes("           )\n         ORDER BY id")
+        ) {
+          throw new Error("Could not scope the outbox claim query to the fixture orders");
+        }
+
         return testPool.query(scopedSql, [...params, orderIds]);
       }
 
