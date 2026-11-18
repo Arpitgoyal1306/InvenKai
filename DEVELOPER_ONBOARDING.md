@@ -243,10 +243,16 @@ Run it only after checking that `.env` points to your own assigned development b
 To prepare the separate test database, run the same migrations while temporarily directing the migration command to `TEST_DATABASE_URL`:
 
 ```bash
+TEST_DATABASE_URL="$(node -r dotenv/config -e 'process.stdout.write(process.env.TEST_DATABASE_URL || "")')"
+if [ -z "$TEST_DATABASE_URL" ]; then
+  echo "TEST_DATABASE_URL is missing from backend/.env"
+  exit 1
+fi
+
 DATABASE_URL="$TEST_DATABASE_URL" npm run migrate -- up
 ```
 
-This command uses the test database URL only for that migration process. Verify the value before running it. Never run migrations against production or a teammate's database.
+This first loads TEST_DATABASE_URL from the local .env file, fails if it is missing, and then passes it to the migration process as DATABASE_URL. Run it from the backend directory. Verify that it points to your isolated test database before running it. Never run migrations against production or a teammate's database.
 
 If the project lead tells you that your Neon branch already has the schema or migration history has been initialized, do not attempt to reset or re-baseline it. Ask before running any repair or destructive command.
 
