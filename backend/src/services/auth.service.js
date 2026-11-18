@@ -2,12 +2,64 @@ const jwt = require("jsonwebtoken");
 const pool = require("../config/database");
 const bcrypt = require("bcrypt");
 
+const MAX_EMAIL_LENGTH = 254;
+
+function isValidEmail(email) {
+  if (typeof email !== "string") {
+    return false;
+  }
+
+  const normalizedEmail = email.trim();
+
+  if (!normalizedEmail || normalizedEmail.length > MAX_EMAIL_LENGTH) {
+    return false;
+  }
+
+  for (let i = 0; i < normalizedEmail.length; i++) {
+    const char = normalizedEmail[i];
+    if (char.trim() === "") {
+      return false;
+    }
+  }
+
+  const parts = normalizedEmail.split("@");
+
+  if (parts.length !== 2) {
+    return false;
+  }
+
+  const localPart = parts[0];
+  const domain = parts[1];
+
+  if (!localPart || !domain) {
+    return false;
+  }
+
+  if (
+    localPart.startsWith(".") ||
+    localPart.endsWith(".") ||
+    localPart.includes("..")
+  ) {
+    return false;
+  }
+
+  if (
+    !domain.includes(".") ||
+    domain.startsWith(".") ||
+    domain.endsWith(".") ||
+    domain.includes("..")
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 async function registerUser({ name, email, password }) {
   if (
     typeof name !== "string" ||
     !name.trim() ||
-    typeof email !== "string" ||
-    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ||
+    !isValidEmail(email) ||
     typeof password !== "string" ||
     password.length < 8
   ) {
@@ -43,8 +95,7 @@ async function registerUser({ name, email, password }) {
 
 async function loginUser({ email, password }) {
   if (
-    typeof email !== "string" ||
-    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ||
+    !isValidEmail(email) ||
     typeof password !== "string" ||
     !password
   ) {

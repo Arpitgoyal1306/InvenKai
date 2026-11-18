@@ -91,21 +91,38 @@ test("createSupplier rejects invalid email addresses", async () => {
   });
 
   try {
-    await assert.rejects(
-      createSupplier({
-        name: "ABC Suppliers",
-        email: "invalid-email",
-      }),
-      { statusCode: 400 }
-    );
-
-    await assert.rejects(
-      createSupplier({
-        name: "ABC Suppliers",
-        email: "a".repeat(250) + "@example.com",
-      }),
-      { statusCode: 400 }
-    );
+    for (const invalidEmail of [
+      "invalid-email",
+      "user@",
+      "@example.com",
+      "user@example",
+      "user@example.",
+      "user@.example.com",
+      "user@example..com",
+      "user@sub..example.com",
+      ".user@example.com",
+      "user.@example.com",
+      "user..name@example.com",
+      "user name@example.com",
+      "user\vname@example.com",
+      "user\fname@example.com",
+      "user\tname@example.com",
+      "user\nname@example.com",
+      "user\rname@example.com",
+      "user@extra@example.com",
+      `${"a".repeat(244)}@example.com`,
+    ]) {
+      await assert.rejects(
+        createSupplier({
+          name: "ABC Suppliers",
+          email: invalidEmail,
+        }),
+        {
+          statusCode: 400,
+          message: "Please provide a valid email address",
+        }
+      );
+    }
 
     await assert.rejects(
       createSupplier({
@@ -113,7 +130,10 @@ test("createSupplier rejects invalid email addresses", async () => {
         email: 12345,
         phone: "+919876543210",
       }),
-      { statusCode: 400 }
+      {
+        statusCode: 400,
+        message: "Email must be a string",
+      }
     );
 
     assert.equal(queryMock.mock.calls.length, 0);
@@ -128,32 +148,31 @@ test("createSupplier rejects invalid phone numbers", async () => {
   });
 
   try {
-    await assert.rejects(
-      createSupplier({
-        name: "ABC Suppliers",
-        phone: "12345",
-        email: "test@example.com",
-      }),
-      { statusCode: 400 }
-    );
-
-    await assert.rejects(
-      createSupplier({
-        name: "ABC Suppliers",
-        phone: "abc1234567",
-        email: "test@example.com",
-      }),
-      { statusCode: 400 }
-    );
-
-    await assert.rejects(
-      createSupplier({
-        name: "ABC Suppliers",
-        phone: "1".repeat(31),
-        email: "test@example.com",
-      }),
-      { statusCode: 400 }
-    );
+    for (const invalidPhone of [
+      "12345",
+      "123456",
+      "(12) 34-56",
+      "1234567890123456",
+      "abc1234567",
+      "1".repeat(31),
+      `+1${"-".repeat(20)}234567890`,
+      "+1+2345678",
+      "+",
+      "123456@890",
+      "+1(234)567-890a",
+    ]) {
+      await assert.rejects(
+        createSupplier({
+          name: "ABC Suppliers",
+          phone: invalidPhone,
+          email: "test@example.com",
+        }),
+        {
+          statusCode: 400,
+          message: "Please provide a valid phone number",
+        }
+      );
+    }
 
     await assert.rejects(
       createSupplier({
@@ -161,10 +180,50 @@ test("createSupplier rejects invalid phone numbers", async () => {
         phone: 9876543210,
         email: "test@example.com",
       }),
-      { statusCode: 400 }
+      {
+        statusCode: 400,
+        message: "Phone must be a string",
+      }
     );
 
     assert.equal(queryMock.mock.calls.length, 0);
+  } finally {
+    queryMock.mock.restore();
+  }
+});
+
+test("createSupplier accepts 255-character email and 7-to-15 digit phone boundaries", async () => {
+  const maxSupplierEmail = `${"a".repeat(243)}@example.com`;
+  assert.equal(maxSupplierEmail.length, 255);
+
+  const queryMock = mock.method(pool, "query", async (_sql, params) => ({
+    rows: [
+      {
+        id: 1,
+        name: params[0],
+        contact_name: params[1],
+        email: params[2],
+        phone: params[3],
+        is_active: true,
+      },
+    ],
+  }));
+
+  try {
+    const minDigitsResult = await createSupplier({
+      name: "Boundary Supplier",
+      email: `  ${maxSupplierEmail}  `,
+      phone: "123-4567",
+    });
+    assert.equal(minDigitsResult.email, maxSupplierEmail);
+    assert.equal(minDigitsResult.phone, "123-4567");
+
+    const maxDigitsResult = await createSupplier({
+      name: "Boundary Supplier",
+      phone: "+1 (234) 567-89012345",
+    });
+    assert.equal(maxDigitsResult.phone, "+1 (234) 567-89012345");
+    assert.equal(queryMock.mock.calls.length, 2);
   } finally {
     queryMock.mock.restore();
   }
@@ -248,7 +307,7 @@ test("createSupplier propagates database errors", async () => {
         name: "ABC Suppliers",
         email: "sales@abc.com",
       }),
-      /Database connection failed/
+      { message: "Database connection failed" }
     );
 
     assert.equal(queryMock.mock.calls.length, 1);
@@ -275,9 +334,8 @@ test("getSuppliers returns active suppliers with pagination", async () => {
 
     assert.deepEqual(queryMock.mock.calls[0].arguments[1], [10, 20]);
 
-    assert.match(
-      queryMock.mock.calls[0].arguments[0],
-      /WHERE is_active = TRUE/
+    assert.ok(
+      queryMock.mock.calls[0].arguments[0].includes("WHERE is_active = TRUE")
     );
   } finally {
     queryMock.mock.restore();
@@ -332,14 +390,12 @@ test("getSupplierById returns an active supplier when found", async () => {
 
     assert.deepEqual(queryMock.mock.calls[0].arguments[1], [1]);
 
-    assert.match(
-      queryMock.mock.calls[0].arguments[0],
-      /WHERE id = \$1/
+    assert.ok(
+      queryMock.mock.calls[0].arguments[0].includes("WHERE id = $1")
     );
 
-    assert.match(
-      queryMock.mock.calls[0].arguments[0],
-      /is_active = TRUE/
+    assert.ok(
+      queryMock.mock.calls[0].arguments[0].includes("is_active = TRUE")
     );
   } finally {
     queryMock.mock.restore();
@@ -422,11 +478,11 @@ test("updateSupplier updates a supplier successfully inside a transaction", asyn
   };
 
   const clientMock = createSupplierClientMock(async (sql) => {
-    if (/SELECT/i.test(sql)) {
+    if (sql.includes("SELECT")) {
       return { rows: [existingSupplier] };
     }
 
-    if (/UPDATE suppliers/i.test(sql)) {
+    if (sql.includes("UPDATE suppliers")) {
       return { rows: [updatedSupplier] };
     }
 
@@ -441,11 +497,11 @@ test("updateSupplier updates a supplier successfully inside a transaction", asyn
     assert.deepEqual(result, updatedSupplier);
     assert.equal(clientMock.queries.length, 4);
 
-    assert.match(clientMock.queries[0].sql, /BEGIN/i);
-    assert.match(clientMock.queries[1].sql, /SELECT/i);
-    assert.match(clientMock.queries[1].sql, /FOR UPDATE/i);
-    assert.match(clientMock.queries[2].sql, /UPDATE suppliers/i);
-    assert.match(clientMock.queries[3].sql, /COMMIT/i);
+    assert.ok(clientMock.queries[0].sql.includes("BEGIN"));
+    assert.ok(clientMock.queries[1].sql.includes("SELECT"));
+    assert.ok(clientMock.queries[1].sql.includes("FOR UPDATE"));
+    assert.ok(clientMock.queries[2].sql.includes("UPDATE suppliers"));
+    assert.ok(clientMock.queries[3].sql.includes("COMMIT"));
 
     assert.deepEqual(clientMock.queries[2].params, [
       "ABC Suppliers",
@@ -543,10 +599,10 @@ test("updateSupplier returns null when supplier is not found", async () => {
     assert.equal(result, null);
     assert.equal(clientMock.queries.length, 3);
 
-    assert.match(clientMock.queries[0].sql, /BEGIN/i);
-    assert.match(clientMock.queries[1].sql, /SELECT/i);
-    assert.match(clientMock.queries[1].sql, /FOR UPDATE/i);
-    assert.match(clientMock.queries[2].sql, /COMMIT/i);
+    assert.ok(clientMock.queries[0].sql.includes("BEGIN"));
+    assert.ok(clientMock.queries[1].sql.includes("SELECT"));
+    assert.ok(clientMock.queries[1].sql.includes("FOR UPDATE"));
+    assert.ok(clientMock.queries[2].sql.includes("COMMIT"));
 
     assert.equal(clientMock.wasReleased(), true);
   } finally {
@@ -565,7 +621,7 @@ test("updateSupplier rolls back when updated supplier data is invalid", async ()
   };
 
   const clientMock = createSupplierClientMock(async (sql) => {
-    if (/SELECT/i.test(sql)) {
+    if (sql.includes("SELECT")) {
       return { rows: [existingSupplier] };
     }
 
@@ -579,16 +635,46 @@ test("updateSupplier rolls back when updated supplier data is invalid", async ()
       { statusCode: 400 }
     );
 
-    // Invalid email address
+    // Invalid email address (missing domain, consecutive dots, exceeding 255 chars, non-string)
+    for (const invalidEmail of [
+      "invalid-email",
+      "user@example..com",
+      `${"a".repeat(244)}@example.com`,
+    ]) {
+      await assert.rejects(
+        updateSupplier(1, { email: invalidEmail }),
+        {
+          statusCode: 400,
+          message: "Please provide a valid email address",
+        }
+      );
+    }
+
     await assert.rejects(
-      updateSupplier(1, { email: "invalid-email" }),
-      { statusCode: 400 }
+      updateSupplier(1, { email: 12345 }),
+      {
+        statusCode: 400,
+        message: "Email must be a string",
+      }
     );
 
-    // Invalid phone number
+    // Invalid phone number (too few digits, too many digits, non-string)
+    for (const invalidPhone of ["12345", "1234567890123456"]) {
+      await assert.rejects(
+        updateSupplier(1, { phone: invalidPhone }),
+        {
+          statusCode: 400,
+          message: "Please provide a valid phone number",
+        }
+      );
+    }
+
     await assert.rejects(
-      updateSupplier(1, { phone: "12345" }),
-      { statusCode: 400 }
+      updateSupplier(1, { phone: 9876543210 }),
+      {
+        statusCode: 400,
+        message: "Phone must be a string",
+      }
     );
 
     // Removing both contact methods must be rejected
@@ -600,16 +686,16 @@ test("updateSupplier rolls back when updated supplier data is invalid", async ()
       { statusCode: 400 }
     );
 
-    // All four invalid updates must roll back.
+    // All nine invalid updates must roll back.
     const rollbackQueries = clientMock.queries.filter(({ sql }) =>
-      /ROLLBACK/i.test(sql)
+      sql.includes("ROLLBACK")
     );
 
-    assert.equal(rollbackQueries.length, 4);
+    assert.equal(rollbackQueries.length, 9);
 
     // No invalid update should reach the UPDATE query.
     assert.equal(
-      clientMock.queries.some(({ sql }) => /UPDATE suppliers/i.test(sql)),
+      clientMock.queries.some(({ sql }) => sql.includes("UPDATE suppliers")),
       false
     );
 
@@ -621,7 +707,7 @@ test("updateSupplier rolls back when updated supplier data is invalid", async ()
 
 test("updateSupplier propagates database errors and rolls back", async () => {
   const clientMock = createSupplierClientMock(async (sql) => {
-    if (/SELECT/i.test(sql)) {
+    if (sql.includes("SELECT")) {
       throw new Error("Database connection failed");
     }
 
@@ -633,12 +719,11 @@ test("updateSupplier propagates database errors and rolls back", async () => {
       updateSupplier(1, {
         phone: "+91 9999999999",
       }),
-      /Database connection failed/
+      { message: "Database connection failed" }
     );
 
-    assert.match(
-      clientMock.queries.at(-1).sql,
-      /ROLLBACK/i
+    assert.ok(
+      clientMock.queries.at(-1).sql.includes("ROLLBACK")
     );
 
     assert.equal(clientMock.wasReleased(), true);
@@ -666,14 +751,12 @@ test("deleteSupplier soft deletes a supplier successfully", async () => {
     assert.deepEqual(result, deletedSupplier);
     assert.equal(queryMock.mock.calls.length, 1);
 
-    assert.match(
-      queryMock.mock.calls[0].arguments[0],
-      /UPDATE suppliers/i
+    assert.ok(
+      queryMock.mock.calls[0].arguments[0].includes("UPDATE suppliers")
     );
 
-    assert.match(
-      queryMock.mock.calls[0].arguments[0],
-      /is_active = FALSE/i
+    assert.ok(
+      queryMock.mock.calls[0].arguments[0].includes("is_active = FALSE")
     );
 
     assert.deepEqual(
