@@ -78,9 +78,12 @@ jobs:
         working-directory: backend
         run: |
           DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
-          test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT to_regclass('public.order_outbox') IS NULL AND to_regclass('public.receipts') IS NULL")" = "t"
+          test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT to_regclass('public.order_outbox') IS NOT NULL AND to_regclass('public.receipts') IS NOT NULL")" = "t"
+          test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 0 FROM public.pgmigrations WHERE name = '1794300000000_backfill-product-inventory'")" = "t"
           DATABASE_URL="$TEST_DATABASE_URL" npm run migrate up
           test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT to_regclass('public.order_outbox') IS NOT NULL AND to_regclass('public.receipts') IS NOT NULL")" = "t"
+          test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 1 FROM public.pgmigrations WHERE name = '1794300000000_backfill-product-inventory'")" = "t"
+          test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 0 FROM public.products p WHERE NOT EXISTS (SELECT 1 FROM public.inventory i WHERE i.product_id = p.id)")" = "t"
           test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 5 FROM pg_constraint WHERE conname IN ('order_outbox_status_check', 'order_outbox_attempts_nonnegative', 'order_outbox_unique_event_per_order', 'receipts_total_nonnegative', 'receipts_items_array_check')")" = "t"
           test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 2 FROM pg_indexes WHERE indexname IN ('idx_order_outbox_pending', 'idx_order_outbox_expired_leases')")" = "t"
 
