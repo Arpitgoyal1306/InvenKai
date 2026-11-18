@@ -36,13 +36,14 @@ async function waitForJobState(queue, jobId, expectedState, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    const job = await queue.getJob(jobId);
-    if (job) {
-      const state = await job.getState();
-      if (state === expectedState) return job;
-      if (state === "failed") {
-        throw new Error(`BullMQ job ${jobId} failed: ${job.failedReason}`);
-      }
+    const state = await queue.getJobState(jobId);
+    if (state === expectedState) {
+      const job = await queue.getJob(jobId);
+      if (job) return job;
+    }
+    if (state === "failed" && expectedState !== "failed") {
+      const failedJob = await queue.getJob(jobId);
+      throw new Error(`BullMQ job ${jobId} failed: ${failedJob?.failedReason}`);
     }
     await delay(100);
   }
