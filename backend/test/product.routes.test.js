@@ -27,6 +27,34 @@ const product = {
   price: "75000.00",
 };
 
+// Transaction-aware mock for createProduct()
+function createProductCreationMock({ failOnProductInsert = false } = {}) {
+  const queries = [];
+
+  const client = {
+    query: async (sql, params) => {
+      queries.push({ sql, params });
+
+      if (sql.includes("INSERT INTO products")) {
+        if (failOnProductInsert) {
+          const error = new Error("Duplicate SKU");
+          error.code = "23505";
+          throw error;
+        }
+
+        return { rows: [product] };
+      }
+
+      return { rows: [] };
+    },
+    release: mock.fn(),
+  };
+
+  const connectMock = mock.method(pool, "connect", async () => client);
+
+  return { client, queries, connectMock };
+}
+
 // --------------------------------------------------
 // AUTHENTICATION AND AUTHORIZATION
 // --------------------------------------------------
@@ -38,7 +66,6 @@ test("GET products rejects requests without a token", async () => {
 
 test("POST products rejects requests without a token", async () => {
   const response = await request(app).post("/api/products").send(product);
-
   assert.equal(response.status, 401);
 });
 
@@ -78,9 +105,7 @@ test("DELETE products rejects requests without a token", async () => {
 // --------------------------------------------------
 
 test("POST products creates a product for inventory manager", async () => {
-  const queryMock = mock.method(pool, "query", async () => ({
-    rows: [product],
-  }));
+  const creationMock = createProductCreationMock();
 
   try {
     const response = await request(app)
@@ -97,16 +122,20 @@ test("POST products creates a product for inventory manager", async () => {
     assert.equal(response.status, 201);
     assert.equal(response.body.message, "Product created successfully");
     assert.deepEqual(response.body.product, product);
-    assert.equal(queryMock.mock.calls.length, 1);
+
+    assert.deepEqual(
+      creationMock.queries.map(({ sql }) => sql.trim().split(/\s+/)[0]),
+      ["BEGIN", "INSERT", "INSERT", "COMMIT"],
+    );
+
+    assert.equal(creationMock.client.release.mock.calls.length, 1);
   } finally {
-    queryMock.mock.restore();
+    creationMock.connectMock.mock.restore();
   }
 });
 
 test("POST products creates a product for admin", async () => {
-  const queryMock = mock.method(pool, "query", async () => ({
-    rows: [product],
-  }));
+  const creationMock = createProductCreationMock();
 
   try {
     const response = await request(app)
@@ -120,8 +149,10 @@ test("POST products creates a product for admin", async () => {
       });
 
     assert.equal(response.status, 201);
+    assert.deepEqual(response.body.product, product);
+    assert.equal(creationMock.client.release.mock.calls.length, 1);
   } finally {
-    queryMock.mock.restore();
+    creationMock.connectMock.mock.restore();
   }
 });
 
@@ -140,10 +171,8 @@ test("POST products rejects invalid product data", async () => {
 });
 
 test("POST products returns 409 for duplicate SKU", async () => {
-  const queryMock = mock.method(pool, "query", async () => {
-    const error = new Error("Duplicate SKU");
-    error.code = "23505";
-    throw error;
+  const creationMock = createProductCreationMock({
+    failOnProductInsert: true,
   });
 
   try {
@@ -158,8 +187,10 @@ test("POST products returns 409 for duplicate SKU", async () => {
       });
 
     assert.equal(response.status, 409);
+    assert.match(creationMock.queries.at(-1).sql, /ROLLBACK/i);
+    assert.equal(creationMock.client.release.mock.calls.length, 1);
   } finally {
-    queryMock.mock.restore();
+    creationMock.connectMock.mock.restore();
   }
 });
 
@@ -203,6 +234,7 @@ test("GET products uses default pagination", async () => {
       limit: 10,
       offset: 0,
     });
+
     assert.deepEqual(queryMock.mock.calls[0].arguments[1], [10, 0]);
   } finally {
     queryMock.mock.restore();
@@ -310,11 +342,11 @@ test("PATCH products updates a product for inventory manager", async () => {
 
   const client = {
     query: async (sql) => {
-      if (/SELECT/i.test(sql)) {
+      if (sql.includes("SELECT")) {
         return { rows: [product] };
       }
 
-      if (/UPDATE products/i.test(sql)) {
+      if (sql.includes("UPDATE products")) {
         return { rows: [updatedProduct] };
       }
 
@@ -372,11 +404,11 @@ test("PATCH products returns 404 when product does not exist", async () => {
 test("PATCH products returns 409 for duplicate SKU", async () => {
   const client = {
     query: async (sql) => {
-      if (/SELECT/i.test(sql)) {
+      if (sql.includes("SELECT")) {
         return { rows: [product] };
       }
 
-      if (/UPDATE products/i.test(sql)) {
+      if (sql.includes("UPDATE products")) {
         const error = new Error("Duplicate SKU");
         error.code = "23505";
         throw error;
@@ -458,17 +490,14 @@ test("DELETE products returns 409 when product has dependent records", async () 
   }
 });
 
-
 // --------------------------------------------------
 // PRODUCT CATALOG CACHE INTEGRATION TESTS
 // --------------------------------------------------
 
 test("GET products uses the product cache service", async () => {
-  const cacheMock = mock.method(
-    productCache,
-    "getCachedProducts",
-    async () => [product]
-  );
+  const cacheMock = mock.method(productCache, "getCachedProducts", async () => [
+    product,
+  ]);
 
   try {
     const response = await request(app)
@@ -488,7 +517,7 @@ test("GET product by ID uses the product cache service", async () => {
   const cacheMock = mock.method(
     productCache,
     "getCachedProductById",
-    async () => product
+    async () => product,
   );
 
   try {
@@ -506,14 +535,12 @@ test("GET product by ID uses the product cache service", async () => {
 });
 
 test("POST products invalidates cache after successful creation", async () => {
-  const queryMock = mock.method(pool, "query", async () => ({
-    rows: [product],
-  }));
+  const creationMock = createProductCreationMock();
 
   const invalidationMock = mock.method(
     productCache,
     "invalidateProductCatalog",
-    async () => true
+    async () => true,
   );
 
   try {
@@ -532,21 +559,19 @@ test("POST products invalidates cache after successful creation", async () => {
     assert.equal(invalidationMock.mock.calls.length, 1);
   } finally {
     invalidationMock.mock.restore();
-    queryMock.mock.restore();
+    creationMock.connectMock.mock.restore();
   }
 });
 
 test("POST products does not invalidate cache when creation fails", async () => {
-  const queryMock = mock.method(pool, "query", async () => {
-    const error = new Error("Duplicate SKU");
-    error.code = "23505";
-    throw error;
+  const creationMock = createProductCreationMock({
+    failOnProductInsert: true,
   });
 
   const invalidationMock = mock.method(
     productCache,
     "invalidateProductCatalog",
-    async () => true
+    async () => true,
   );
 
   try {
@@ -564,7 +589,7 @@ test("POST products does not invalidate cache when creation fails", async () => 
     assert.equal(invalidationMock.mock.calls.length, 0);
   } finally {
     invalidationMock.mock.restore();
-    queryMock.mock.restore();
+    creationMock.connectMock.mock.restore();
   }
 });
 
@@ -576,11 +601,11 @@ test("PATCH products invalidates cache after successful update", async () => {
 
   const client = {
     query: async (sql) => {
-      if (/SELECT/i.test(sql)) {
+      if (sql.includes("SELECT")) {
         return { rows: [product] };
       }
 
-      if (/UPDATE products/i.test(sql)) {
+      if (sql.includes("UPDATE products")) {
         return { rows: [updatedProduct] };
       }
 
@@ -594,7 +619,7 @@ test("PATCH products invalidates cache after successful update", async () => {
   const invalidationMock = mock.method(
     productCache,
     "invalidateProductCatalog",
-    async () => true
+    async () => true,
   );
 
   try {
@@ -615,11 +640,11 @@ test("PATCH products invalidates cache after successful update", async () => {
 test("PATCH products does not invalidate cache when update fails", async () => {
   const client = {
     query: async (sql) => {
-      if (/SELECT/i.test(sql)) {
+      if (sql.includes("SELECT")) {
         return { rows: [product] };
       }
 
-      if (/UPDATE products/i.test(sql)) {
+      if (sql.includes("UPDATE products")) {
         const error = new Error("Duplicate SKU");
         error.code = "23505";
         throw error;
@@ -635,7 +660,7 @@ test("PATCH products does not invalidate cache when update fails", async () => {
   const invalidationMock = mock.method(
     productCache,
     "invalidateProductCatalog",
-    async () => true
+    async () => true,
   );
 
   try {
@@ -660,7 +685,7 @@ test("DELETE products invalidates cache after successful deletion", async () => 
   const invalidationMock = mock.method(
     productCache,
     "invalidateProductCatalog",
-    async () => true
+    async () => true,
   );
 
   try {
@@ -686,7 +711,7 @@ test("DELETE products does not invalidate cache when deletion fails", async () =
   const invalidationMock = mock.method(
     productCache,
     "invalidateProductCatalog",
-    async () => true
+    async () => true,
   );
 
   try {
@@ -703,14 +728,12 @@ test("DELETE products does not invalidate cache when deletion fails", async () =
 });
 
 test("POST products remains successful when cache invalidation fails", async () => {
-  const queryMock = mock.method(pool, "query", async () => ({
-    rows: [product],
-  }));
+  const creationMock = createProductCreationMock();
 
   const invalidationMock = mock.method(
     productCache,
     "invalidateProductCatalog",
-    async () => false
+    async () => false,
   );
 
   try {
@@ -730,6 +753,6 @@ test("POST products remains successful when cache invalidation fails", async () 
     assert.equal(invalidationMock.mock.calls.length, 1);
   } finally {
     invalidationMock.mock.restore();
-    queryMock.mock.restore();
+    creationMock.connectMock.mock.restore();
   }
 });

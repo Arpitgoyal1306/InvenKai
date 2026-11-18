@@ -1,6 +1,19 @@
-const { test } = require("node:test");
+require("dotenv").config();
+
+if (process.env.NODE_ENV !== "test") {
+  throw new Error(
+    "product.integration.test.js must run with NODE_ENV=test",
+  );
+}
+
+if (!process.env.TEST_DATABASE_URL) {
+  throw new Error("TEST_DATABASE_URL is required");
+}
+
+const { test, before } = require("node:test");
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
+const path = require("node:path");
 
 const pool = require("../src/config/database");
 
@@ -11,6 +24,10 @@ const {
   updateProduct,
   deleteProduct,
 } = require("../src/services/product.service");
+
+before(async () => {
+  await pool.verifyDatabaseIdentity();
+});
 
 async function createCategory() {
   const uniqueId = randomUUID();
@@ -111,8 +128,23 @@ test("creates a product in PostgreSQL", async () => {
 
     assert.equal(result.rows.length, 1);
     assert.equal(result.rows[0].sku, `CREATE-${uniqueId}`);
+
+    const inventoryResult = await pool.query(
+      `SELECT product_id, quantity
+       FROM inventory
+       WHERE product_id = $1`,
+      [product.id],
+    );
+
+    assert.equal(inventoryResult.rows.length, 1);
+    assert.equal(String(inventoryResult.rows[0].product_id), String(product.id));
+    assert.equal(inventoryResult.rows[0].quantity, 0);
   } finally {
     if (productId) {
+      await pool.query("DELETE FROM inventory WHERE product_id = $1", [
+        productId,
+      ]);
+
       await pool.query("DELETE FROM products WHERE id = $1", [productId]);
     }
 
@@ -173,12 +205,32 @@ test("retrieves a product from PostgreSQL by ID", async () => {
 // 5. GET ALL PRODUCTS
 test("retrieves products with pagination from PostgreSQL", async () => {
   const fixture = await createProductFixture();
+  const client = await pool.connect();
 
   try {
-    const products = await getProducts(10, 0);
+    // Keep the count and page query on one stable snapshot while other
+    // integration tests modify the shared products table.
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+
+    // Fetch the product directly to establish its position.
+    const positionResult = await client.query(
+      `SELECT COUNT(*) AS position
+       FROM products
+       WHERE id < $1`,
+      [fixture.productId],
+    );
+
+    const position = Number(positionResult.rows[0].position);
+
+    // Calculate the page containing our fixture.
+    const offset = Math.floor(position / 10) * 10;
+
+    const totalResult = await client.query("SELECT COUNT(*) AS total FROM products");
+    const products = await getProducts(10, offset, client);
 
     assert.ok(Array.isArray(products));
     assert.ok(products.length <= 10);
+    assert.ok(Number(totalResult.rows[0].total) > position);
 
     const ids = products.map((product) => BigInt(product.id));
 
@@ -192,9 +244,15 @@ test("retrieves products with pagination from PostgreSQL", async () => {
       ),
     );
   } finally {
+    try {
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
     await cleanupProductFixture(fixture);
   }
 });
+
 
 // 6. UPDATE PRODUCT
 test("updates a product and persists changes in PostgreSQL", async () => {
@@ -366,5 +424,144 @@ test("prevents deletion of a product associated with a supplier", async () => {
     );
   } finally {
     await cleanupProductFixture(fixture);
+  }
+});
+
+// 13. BACKFILL MIGRATION IDEMPOTENCY & PRESERVATION
+test("backfill migration creates missing inventory records and preserves existing quantities", async () => {
+  const { jiti, MigrationBuilder } = await import("node-pg-migrate");
+  const migrationPath = path.resolve(
+    __dirname,
+    "../migrations/1794300000000_backfill-product-inventory.js",
+  );
+  const backfillMigration = await jiti.import(migrationPath);
+
+  const client = await pool.connect();
+
+  async function applyBackfillMigration(direction = "up") {
+    const pgm = new MigrationBuilder({}, {}, false, console);
+    await backfillMigration[direction](pgm);
+    const sqlSteps = pgm.getSqlSteps();
+
+    for (const sql of sqlSteps) {
+      await client.query(sql);
+    }
+
+    return sqlSteps;
+  }
+
+  try {
+    // Run inside an isolated transaction with session-local temporary tables
+    // cloned from public schema so the migration SQL executes against real
+    // PostgreSQL table definitions and constraints without modifying any
+    // shared rows in public.products or public.inventory.
+    await client.query("BEGIN");
+
+    await client.query(`
+      CREATE TEMP SEQUENCE temp_categories_id_seq;
+      CREATE TEMP SEQUENCE temp_products_id_seq;
+      CREATE TEMP SEQUENCE temp_inventory_id_seq;
+
+      CREATE TEMP TABLE categories (
+        LIKE public.categories INCLUDING ALL
+      ) ON COMMIT DROP;
+      ALTER TABLE pg_temp.categories
+        ALTER COLUMN id SET DEFAULT nextval('temp_categories_id_seq');
+
+      CREATE TEMP TABLE products (
+        LIKE public.products INCLUDING ALL,
+        FOREIGN KEY (category_id) REFERENCES pg_temp.categories(id) ON DELETE RESTRICT
+      ) ON COMMIT DROP;
+      ALTER TABLE pg_temp.products
+        ALTER COLUMN id SET DEFAULT nextval('temp_products_id_seq');
+
+      CREATE TEMP TABLE inventory (
+        LIKE public.inventory INCLUDING ALL,
+        FOREIGN KEY (product_id) REFERENCES pg_temp.products(id) ON DELETE RESTRICT
+      ) ON COMMIT DROP;
+      ALTER TABLE pg_temp.inventory
+        ALTER COLUMN id SET DEFAULT nextval('temp_inventory_id_seq');
+    `);
+
+    const categoryResult = await client.query(
+      `INSERT INTO categories (name)
+       VALUES ('Migration Test Category')
+       RETURNING id`,
+    );
+    const categoryId = categoryResult.rows[0].id;
+
+    const productsResult = await client.query(
+      `INSERT INTO products (category_id, name, description, sku, price)
+       VALUES ($1, 'Product Missing Inventory', 'Test', 'MIG-NO-INV', 100),
+              ($1, 'Product With Inventory', 'Test', 'MIG-HAS-INV', 200)
+       RETURNING id`,
+      [categoryId],
+    );
+
+    const productWithoutInventoryId = productsResult.rows[0].id;
+    const productWithInventoryId = productsResult.rows[1].id;
+
+    await client.query(
+      `INSERT INTO inventory (product_id, quantity)
+       VALUES ($1, 25)`,
+      [productWithInventoryId],
+    );
+
+    const firstRunSteps = await applyBackfillMigration("up");
+    assert.ok(firstRunSteps.length > 0);
+
+    const inv1 = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithoutInventoryId],
+    );
+    assert.equal(inv1.rows.length, 1);
+    assert.equal(inv1.rows[0].quantity, 0);
+
+    const inv2 = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithInventoryId],
+    );
+    assert.equal(inv2.rows.length, 1);
+    assert.equal(inv2.rows[0].quantity, 25);
+
+    const secondRunSteps = await applyBackfillMigration("up");
+    assert.ok(secondRunSteps.length > 0);
+
+    const inv1After = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithoutInventoryId],
+    );
+    assert.equal(inv1After.rows.length, 1);
+    assert.equal(inv1After.rows[0].quantity, 0);
+
+    const inv2After = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithInventoryId],
+    );
+    assert.equal(inv2After.rows.length, 1);
+    assert.equal(inv2After.rows[0].quantity, 25);
+
+    const downSteps = await applyBackfillMigration("down");
+    assert.deepEqual(downSteps, []);
+
+    const inv1AfterDown = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithoutInventoryId],
+    );
+    assert.equal(inv1AfterDown.rows.length, 1);
+    assert.equal(inv1AfterDown.rows[0].quantity, 0);
+
+    const inv2AfterDown = await client.query(
+      "SELECT quantity FROM inventory WHERE product_id = $1",
+      [productWithInventoryId],
+    );
+    assert.equal(inv2AfterDown.rows.length, 1);
+    assert.equal(inv2AfterDown.rows[0].quantity, 25);
+  } finally {
+    try {
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
   }
 });

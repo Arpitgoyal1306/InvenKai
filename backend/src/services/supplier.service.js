@@ -1,5 +1,131 @@
 const pool = require("../config/database");
 
+const MAX_SUPPLIER_EMAIL_LENGTH = 255;
+const MAX_SUPPLIER_PHONE_LENGTH = 30;
+const MIN_SUPPLIER_PHONE_DIGITS = 7;
+const MAX_SUPPLIER_PHONE_DIGITS = 15;
+
+function isValidSupplierEmail(email) {
+  if (typeof email !== "string") {
+    return false;
+  }
+
+  const normalizedEmail = email.trim();
+
+  if (!normalizedEmail || normalizedEmail.length > MAX_SUPPLIER_EMAIL_LENGTH) {
+    return false;
+  }
+
+  for (let i = 0; i < normalizedEmail.length; i++) {
+    const char = normalizedEmail[i];
+    if (char.trim() === "") {
+      return false;
+    }
+  }
+
+  const parts = normalizedEmail.split("@");
+
+  if (parts.length !== 2) {
+    return false;
+  }
+
+  const localPart = parts[0];
+  const domain = parts[1];
+
+  if (!localPart || !domain) {
+    return false;
+  }
+
+  if (
+    localPart.startsWith(".") ||
+    localPart.endsWith(".") ||
+    localPart.includes("..")
+  ) {
+    return false;
+  }
+
+  if (
+    !domain.includes(".") ||
+    domain.startsWith(".") ||
+    domain.endsWith(".") ||
+    domain.includes("..")
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizeAndValidateSupplierEmail(email) {
+  if (email != null && typeof email !== "string") {
+    const error = new Error("Email must be a string");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const normalizedEmail = email?.trim().toLowerCase() || null;
+
+  if (normalizedEmail && !isValidSupplierEmail(normalizedEmail)) {
+    const error = new Error("Please provide a valid email address");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return normalizedEmail;
+}
+
+function normalizeAndValidateSupplierPhone(phone) {
+  if (phone != null && typeof phone !== "string") {
+    const error = new Error("Phone must be a string");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const normalizedPhone = phone?.trim() || null;
+
+  if (normalizedPhone) {
+    if (normalizedPhone.length > MAX_SUPPLIER_PHONE_LENGTH) {
+      const error = new Error("Please provide a valid phone number");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    let digitCount = 0;
+
+    for (let i = 0; i < normalizedPhone.length; i++) {
+      const char = normalizedPhone[i];
+
+      if (char >= "0" && char <= "9") {
+        digitCount += 1;
+      } else if (
+        (char === "+" && i === 0) ||
+        char === " " ||
+        char === "(" ||
+        char === ")" ||
+        char === "." ||
+        char === "-"
+      ) {
+        // Allowed formatting characters
+      } else {
+        const error = new Error("Please provide a valid phone number");
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    if (
+      digitCount < MIN_SUPPLIER_PHONE_DIGITS ||
+      digitCount > MAX_SUPPLIER_PHONE_DIGITS
+    ) {
+      const error = new Error("Please provide a valid phone number");
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  return normalizedPhone;
+}
+
 // Create a new supplier
 async function createSupplier(supplierData) {
   if (
@@ -38,49 +164,8 @@ async function createSupplier(supplierData) {
     throw error;
   }
 
-  // Validate email type
-  if (email != null && typeof email !== "string") {
-    const error = new Error("Email must be a string");
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const normalizedEmail = email?.trim().toLowerCase() || null;
-
-  if (
-    normalizedEmail &&
-    (
-      normalizedEmail.length > 255 ||
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
-    )
-  ) {
-    const error = new Error("Please provide a valid email address");
-    error.statusCode = 400;
-    throw error;
-  }
-
-  // Validate phone type
-  if (phone != null && typeof phone !== "string") {
-    const error = new Error("Phone must be a string");
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const normalizedPhone = phone?.trim() || null;
-
-  if (
-    normalizedPhone &&
-    (
-      normalizedPhone.length > 30 ||
-      !/^\+?[0-9\s().-]+$/.test(normalizedPhone) ||
-      normalizedPhone.replace(/\D/g, "").length < 7 ||
-      normalizedPhone.replace(/\D/g, "").length > 15
-    )
-  ) {
-    const error = new Error("Please provide a valid phone number");
-    error.statusCode = 400;
-    throw error;
-  }
+  const normalizedEmail = normalizeAndValidateSupplierEmail(email);
+  const normalizedPhone = normalizeAndValidateSupplierPhone(phone);
 
   if (!normalizedEmail && !normalizedPhone) {
     const error = new Error(
@@ -252,57 +337,12 @@ async function updateSupplier(id, updates) {
       throw error;
     }
 
-    // Validate email
-    if (
-      updatedSupplier.email != null &&
-      typeof updatedSupplier.email !== "string"
-    ) {
-      const error = new Error("Email must be a string");
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const normalizedEmail =
-      updatedSupplier.email?.trim().toLowerCase() || null;
-
-    if (
-      normalizedEmail &&
-      (
-        normalizedEmail.length > 255 ||
-        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
-      )
-    ) {
-      const error = new Error("Please provide a valid email address");
-      error.statusCode = 400;
-      throw error;
-    }
-
-    // Validate phone
-    if (
-      updatedSupplier.phone != null &&
-      typeof updatedSupplier.phone !== "string"
-    ) {
-      const error = new Error("Phone must be a string");
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const normalizedPhone =
-      updatedSupplier.phone?.trim() || null;
-
-    if (
-      normalizedPhone &&
-      (
-        normalizedPhone.length > 30 ||
-        !/^\+?[0-9\s().-]+$/.test(normalizedPhone) ||
-        normalizedPhone.replace(/\D/g, "").length < 7 ||
-        normalizedPhone.replace(/\D/g, "").length > 15
-      )
-    ) {
-      const error = new Error("Please provide a valid phone number");
-      error.statusCode = 400;
-      throw error;
-    }
+    const normalizedEmail = normalizeAndValidateSupplierEmail(
+      updatedSupplier.email
+    );
+    const normalizedPhone = normalizeAndValidateSupplierPhone(
+      updatedSupplier.phone
+    );
 
     // Require at least one contact method
     if (!normalizedEmail && !normalizedPhone) {

@@ -169,3 +169,167 @@ test("loginUser rejects invalid input", async () => {
     { statusCode: 400 },
   );
 });
+
+test("registerUser and loginUser accept valid emails with leading/trailing whitespace and maximum 254-character length", async (t) => {
+  const passwordHash = await bcrypt.hash("password123", 4);
+  const maxLengthEmail = `${"a".repeat(242)}@example.com`;
+  assert.equal(maxLengthEmail.length, 254);
+
+  const query = mock.method(pool, "query", async (sql, params) => {
+    if (sql.includes("INSERT INTO users")) {
+      return {
+        rows: [
+          {
+            id: "1",
+            name: params[0],
+            email: params[1],
+            role: "customer",
+            created_at: new Date(),
+          },
+        ],
+        rowCount: 1,
+      };
+    }
+
+    return {
+      rows: [
+        {
+          id: "1",
+          name: "Test User",
+          email: params[0],
+          password_hash: passwordHash,
+          role: "customer",
+        },
+      ],
+    };
+  });
+
+  t.after(() => mock.restoreAll());
+
+  const registeredSubdomain = await registerUser({
+    name: "Test User",
+    email: "  USER@MAIL.EXAMPLE.CO.UK  ",
+    password: "password123",
+  });
+  assert.equal(registeredSubdomain.email, "user@mail.example.co.uk");
+
+  const registeredMaxLen = await registerUser({
+    name: "Test User",
+    email: `  ${maxLengthEmail}  `,
+    password: "password123",
+  });
+  assert.equal(registeredMaxLen.email, maxLengthEmail);
+
+  const loggedInSubdomain = await loginUser({
+    email: "  USER@MAIL.EXAMPLE.CO.UK  ",
+    password: "password123",
+  });
+  assert.equal(loggedInSubdomain.user.email, "user@mail.example.co.uk");
+
+  const loggedInMaxLen = await loginUser({
+    email: `  ${maxLengthEmail}  `,
+    password: "password123",
+  });
+  assert.equal(loggedInMaxLen.user.email, maxLengthEmail);
+  assert.equal(query.mock.callCount(), 4);
+});
+
+test("registerUser and loginUser reject missing, empty, whitespace-only, malformed, and >254-character emails", async (t) => {
+  const query = mock.method(pool, "query", async () => {
+    throw new Error("Database should not be queried for invalid email");
+  });
+
+  t.after(() => mock.restoreAll());
+
+  const overMaxLengthEmail = `${"a".repeat(243)}@example.com`;
+  assert.equal(overMaxLengthEmail.length, 255);
+
+  const invalidEmails = [
+    undefined,
+    null,
+    "",
+    "   ",
+    "user@",
+    "@example.com",
+    "user@example",
+    "user@example.",
+    "user@.example.com",
+    "user@example..com",
+    "user@sub..example.com",
+    ".user@example.com",
+    "user.@example.com",
+    "user..name@example.com",
+    "user name@example.com",
+    "user\vname@example.com",
+    "user\fname@example.com",
+    "user\tname@example.com",
+    "user\nname@example.com",
+    "user\rname@example.com",
+    "user@extra@example.com",
+    overMaxLengthEmail,
+  ];
+
+  for (const invalidEmail of invalidEmails) {
+    await assert.rejects(
+      registerUser({
+        name: "Test User",
+        email: invalidEmail,
+        password: "password123",
+      }),
+      {
+        statusCode: 400,
+        message:
+          "Name, valid email, and password of at least 8 characters are required",
+      },
+    );
+
+    await assert.rejects(
+      loginUser({
+        email: invalidEmail,
+        password: "password123",
+      }),
+      {
+        statusCode: 400,
+        message: "Valid email and password are required",
+      },
+    );
+  }
+
+  assert.equal(query.mock.callCount(), 0);
+});
+
+test("registerUser and loginUser quickly reject very long malicious-looking email input", async (t) => {
+  const query = mock.method(pool, "query", async () => {
+    throw new Error("Database should not be queried for malicious email input");
+  });
+
+  t.after(() => mock.restoreAll());
+
+  const maliciousEmail = `a@${"a.".repeat(50000)} `;
+
+  await assert.rejects(
+    registerUser({
+      name: "Test User",
+      email: maliciousEmail,
+      password: "password123",
+    }),
+    {
+      statusCode: 400,
+      message:
+        "Name, valid email, and password of at least 8 characters are required",
+    },
+  );
+
+  await assert.rejects(
+    loginUser({
+      email: maliciousEmail,
+      password: "password123",
+    }),
+    {
+      statusCode: 400,
+      message: "Valid email and password are required",
+    },
+  );
+
+  assert.equal(query.mock.callCount(), 0);
+});
