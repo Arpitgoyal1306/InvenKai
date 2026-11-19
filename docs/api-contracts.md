@@ -5,13 +5,13 @@
 
 This document describes the currently implemented API endpoints in these five backend route modules:
 
-- `backend/src/routes/auth.routes.js`
-- `backend/src/routes/product.routes.js`
-- `backend/src/routes/supplier.routes.js`
-- `backend/src/routes/inventory.routes.js`
-- `backend/src/routes/reports.routes.js`
+- `server/src/routes/auth.routes.js`
+- `server/src/routes/product.routes.js`
+- `server/src/routes/supplier.routes.js`
+- `server/src/routes/inventory.routes.js`
+- `server/src/routes/reports.routes.js`
 
-The API base path is `/api`.
+The API base path is `/api`. Set `CLIENT_URL` to the frontend origin to enable browser CORS requests and WebSocket connections from that origin.
 
 Only existing endpoints in these five modules are documented. No future endpoints or backend implementation changes are included.
 
@@ -28,6 +28,8 @@ Authorization: Bearer <access_token>
 ```
 
 The token is obtained from the login endpoint and expires after one hour.
+
+Authenticated staff WebSockets receive `inventory.updated` after stock adjustments and checkout. The payload contains `data.quantity` and `data.productId`. Product IDs within JavaScript's safe integer range are numbers. Larger PostgreSQL bigint IDs are decimal strings.
 
 ### Common authentication errors
 
@@ -108,6 +110,8 @@ The password hash is not included in the returned user object.
 
 **POST** `/api/auth/login`
 
+Each API process limits login attempts to 10 per client IP in a 15-minute window. Successful responses release their slot. By default Express uses the socket peer address and ignores forwarded client addresses. Behind a reverse proxy, set `TRUSTED_PROXY_IPS` to the comma-separated IPv4 or IPv6 addresses of the trusted proxy hops. The edge proxy must replace client-supplied forwarding headers. Restrict access to the backend to the intended ingress when deploying behind a proxy. Without this configuration users behind a single proxy share its quota. Deployments with multiple API replicas need a shared rate-limit store to enforce one common quota.
+
 - Authentication: Not required
 - Required role: None
 
@@ -145,6 +149,7 @@ Errors:
 | HTTP status | Condition |
 |---|---|
 | 400 | Invalid or missing login fields |
+| 429 | Login attempt limit reached. Retry after the interval in `Retry-After`. |
 | 401 | Invalid email or password |
 | 500 | Unexpected server error: `{"message":"Internal server error"}` |
 
@@ -461,7 +466,7 @@ Errors:
 **GET** `/api/suppliers/`
 
 - Authentication: Required
-- Required role: Any authenticated role
+- Required role: `admin` or `inventory_manager`
 
 Query parameters:
 
@@ -505,6 +510,7 @@ Errors:
 |---|---|
 | 400 | Invalid pagination values |
 | 401 | Authentication required or token invalid |
+| 403 | Staff role required |
 | 500 | `{"message":"Failed to retrieve suppliers"}` |
 
 ### 5.3 Get a supplier by ID
@@ -512,7 +518,7 @@ Errors:
 **GET** `/api/suppliers/:id`
 
 - Authentication: Required
-- Required role: Any authenticated role
+- Required role: `admin` or `inventory_manager`
 
 Path parameters:
 
@@ -544,6 +550,7 @@ Errors:
 | 400 | `{"message":"Supplier ID must be a positive integer"}` |
 | 404 | `{"message":"Supplier not found"}` |
 | 401 | Authentication required or token invalid |
+| 403 | Staff role required |
 | 500 | `{"message":"Failed to retrieve supplier"}` |
 
 ### 5.4 Update a supplier
@@ -643,7 +650,7 @@ Errors:
 **GET** `/api/inventory/history`
 
 - Authentication: Required
-- Required role: Any authenticated role
+- Required role: `admin` or `inventory_manager`
 
 Query parameters:
 
@@ -688,6 +695,7 @@ Errors:
 |---|---|
 | 400 | `{"message":"Invalid productId, limit, or offset"}` |
 | 401 | Authentication required or token invalid |
+| 403 | Staff role required |
 | 500 | `{"message":"Failed to fetch inventory history"}` |
 
 ### 6.2 Get low-stock products
@@ -882,7 +890,7 @@ Success response — **200 OK**
 
 The response is the summary object itself; it is not wrapped in another property.
 
-Errors: Authentication/authorization errors described in Section 2. Unexpected errors are passed to Express error handling; this route does not define a route-specific JSON error response.
+Errors: Authentication/authorization errors described in Section 2. Unexpected server errors return HTTP 500 with `{"message":"Internal Server Error"}`.
 
 ### 7.2 Get low-stock report
 
@@ -910,7 +918,7 @@ Success response — **200 OK**
 }
 ```
 
-Errors: Authentication/authorization errors described in Section 2. Unexpected errors are passed to Express error handling; this route does not define a route-specific JSON error response.
+Errors: Authentication/authorization errors described in Section 2. Unexpected server errors return HTTP 500 with `{"message":"Internal Server Error"}`.
 
 ### 7.3 Get stock grouped by category
 
@@ -952,7 +960,7 @@ Errors:
 | 400 | `{"message":"categoryId must be a positive integer"}` |
 | 401 / 403 | Authentication or role requirement not met |
 
-Unexpected errors are passed to Express error handling; this route does not define a route-specific JSON error response.
+Unexpected server errors return HTTP 500 with `{"message":"Internal Server Error"}`.
 
 ### 7.4 Get stock movement report
 
@@ -1002,7 +1010,7 @@ Errors:
 | 400 | `{"message":"endDate must be greater than or equal to startDate"}` |
 | 401 / 403 | Authentication or role requirement not met |
 
-Unexpected errors are passed to Express error handling; this route does not define a route-specific JSON error response.
+Unexpected server errors return HTTP 500 with `{"message":"Internal Server Error"}`.
 
 ## 8. Endpoint Summary
 
@@ -1017,11 +1025,11 @@ Unexpected errors are passed to Express error handling; this route does not defi
 | PATCH | `/api/products/:id` | Yes | `inventory_manager`, `admin` |
 | DELETE | `/api/products/:id` | Yes | `admin` |
 | POST | `/api/suppliers/` | Yes | `inventory_manager`, `admin` |
-| GET | `/api/suppliers/` | Yes | Any authenticated role |
-| GET | `/api/suppliers/:id` | Yes | Any authenticated role |
+| GET | `/api/suppliers/` | Yes | `admin` or `inventory_manager` |
+| GET | `/api/suppliers/:id` | Yes | `admin` or `inventory_manager` |
 | PATCH | `/api/suppliers/:id` | Yes | `inventory_manager`, `admin` |
 | DELETE | `/api/suppliers/:id` | Yes | `admin` |
-| GET | `/api/inventory/history` | Yes | Any authenticated role |
+| GET | `/api/inventory/history` | Yes | `admin` or `inventory_manager` |
 | GET | `/api/inventory/low-stock` | Yes | `inventory_manager`, `admin` |
 | GET | `/api/inventory/:productId` | Yes | Any authenticated role |
 | PATCH | `/api/inventory/:productId/decrease` | Yes | `inventory_manager`, `admin` |
@@ -1032,3 +1040,18 @@ Unexpected errors are passed to Express error handling; this route does not defi
 | GET | `/api/reports/stock-movement` | Yes | `inventory_manager`, `admin` |
 
 **Total: 22 endpoints across 5 route modules.**
+
+## Workspace APIs
+
+| Method and path | Access | Behavior |
+|---|---|---|
+| POST `/api/categories` | Staff | Create a unique category from `name`. Returns 201, or 409 for an existing name. |
+| PATCH `/api/products/:id/threshold` | Staff | Set `low_stock_threshold` to a nonnegative integer, or null to disable monitoring. |
+| GET `/api/suppliers/:id/products` | Staff | Paginate the catalog with `limit` and `offset`. Set `linked=true` to return only linked products. |
+| PUT / DELETE `/api/suppliers/:id/products/:productId` | Staff | Link or unlink a product. Repeated requests are idempotent. |
+| GET `/api/orders/:id/receipt` | Order owner | Returns a receipt snapshot or `{"receipt":null}` while the receipt is unavailable. Unknown and inaccessible orders return 404. |
+| GET `/api/operations/summary` | Admin | PostgreSQL and Redis connectivity, outbox state counts, and receipts issued. |
+| GET `/api/operations/failed-receipts` | Admin | List receipt jobs among the latest 100 failed queue entries. |
+| POST `/api/operations/failed-receipts/:id/retry` | Admin | Retry the retained failed receipt job for this order, using the same checks as the recovery CLI. |
+
+Staff access includes inventory managers and admins. The receipt worker and dispatcher must be running to generate receipts.

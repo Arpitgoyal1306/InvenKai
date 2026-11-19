@@ -1,14 +1,20 @@
-name: Backend CI
+name: Client and Server CI
 
 on:
   pull_request:
     paths:
-      - "backend/**"
+      - "server/**"
+      - "client/**"
+      - "Dockerfile"
+      - ".dockerignore"
       - ".github/workflows/backend-ci.yml"
   push:
     branches: ["main"]
     paths:
-      - "backend/**"
+      - "server/**"
+      - "client/**"
+      - "Dockerfile"
+      - ".dockerignore"
       - ".github/workflows/backend-ci.yml"
 
 permissions:
@@ -24,7 +30,7 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/invenkai
       TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/invenkai_test
       REDIS_URL: redis://localhost:6379
-      TEST_REDIS_URL: redis://localhost:6379
+      TEST_REDIS_URL: redis://localhost:6380
     services:
       postgres:
         image: postgres:16
@@ -48,6 +54,15 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      test-redis:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -57,11 +72,30 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: server/package-lock.json
 
       - name: Install backend dependencies
-        working-directory: backend
+        working-directory: server
         run: npm ci
+
+      - name: Verify Redis services are independent
+        working-directory: server
+        run: |
+          node <<'JS'
+          const { createClient } = require("redis");
+          const assert = require("node:assert/strict");
+          (async () => {
+            const app = createClient({ url: process.env.REDIS_URL });
+            const test = createClient({ url: process.env.TEST_REDIS_URL });
+            await Promise.all([app.connect(), test.connect()]);
+            try {
+              const runId = async client => (await client.info("server")).match(/^run_id:(\w+)/m)[1];
+              assert.notEqual(await runId(app), await runId(test));
+            } finally {
+              await Promise.all([app.close(), test.close()]);
+            }
+          })().catch(error => { console.error(error); process.exit(1); });
+          JS
 
       - name: Create isolated test database
         run: |
@@ -69,30 +103,52 @@ jobs:
             -v ON_ERROR_STOP=1 -c "CREATE DATABASE invenkai_test;"
 
       - name: Apply migrations to both databases
-        working-directory: backend
+        working-directory: server
         run: |
           npm run migrate up
           DATABASE_URL="$TEST_DATABASE_URL" npm run migrate up
 
       - name: Verify latest migration down/up and schema objects
-        working-directory: backend
+        working-directory: server
         run: |
           DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
+          DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
+          DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
+          DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
+          DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
+          test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT to_regclass('public.stores') IS NULL")" = "t"
+          DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
           test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT to_regclass('public.order_outbox') IS NOT NULL AND to_regclass('public.receipts') IS NOT NULL")" = "t"
-          test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 0 FROM public.pgmigrations WHERE name = '1794300000000_backfill-product-inventory'")" = "t"
+          test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 2 FROM information_schema.columns WHERE table_schema='public' AND table_name='orders' AND column_name IN ('created_at','updated_at') AND data_type='timestamp without time zone'")" = "t"
           DATABASE_URL="$TEST_DATABASE_URL" npm run migrate up
           test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT to_regclass('public.order_outbox') IS NOT NULL AND to_regclass('public.receipts') IS NOT NULL")" = "t"
-          test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 1 FROM public.pgmigrations WHERE name = '1794300000000_backfill-product-inventory'")" = "t"
+          test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 2 FROM information_schema.columns WHERE table_schema='public' AND table_name='orders' AND column_name IN ('created_at','updated_at') AND data_type='timestamp with time zone'")" = "t"
           test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 0 FROM public.products p WHERE NOT EXISTS (SELECT 1 FROM public.inventory i WHERE i.product_id = p.id)")" = "t"
           test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 5 FROM pg_constraint WHERE conname IN ('order_outbox_status_check', 'order_outbox_attempts_nonnegative', 'order_outbox_unique_event_per_order', 'receipts_total_nonnegative', 'receipts_items_array_check')")" = "t"
           test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT count(*) = 2 FROM pg_indexes WHERE indexname IN ('idx_order_outbox_pending', 'idx_order_outbox_expired_leases')")" = "t"
 
       - name: Run complete backend test suite
-        working-directory: backend
+        working-directory: server
         timeout-minutes: 6
         run: npm test
 
       - name: Run long outbox lease renewal integration test
-        working-directory: backend
+        working-directory: server
         timeout-minutes: 5
         run: npm run test:lease-integration
+
+
+  client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run build

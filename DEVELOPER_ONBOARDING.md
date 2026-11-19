@@ -48,7 +48,7 @@ The backend uses **CommonJS** (`require` / `module.exports`).
 Current backend structure:
 
 ```text
-backend/
+server/
 ├── migrations/                 # Database schema changes
 ├── src/
 │   ├── config/
@@ -87,16 +87,16 @@ Keep responsibilities in the existing layers. Do not put all business logic dire
 
 | File | Why you should read it |
 |---|---|
-| `backend/src/app.js` | See how routes are mounted and how 404/health responses work |
-| `backend/server.js` | Understand server startup and database connectivity check |
-| `backend/src/config/database.js` | Understand the shared PostgreSQL pool |
-| `backend/src/routes/auth.routes.js` | Existing route and authentication pattern |
-| `backend/src/middleware/auth.middleware.js` | How JWT authentication works |
-| `backend/src/middleware/authorize-roles.js` | How role restrictions work |
-| `backend/src/routes/inventory.routes.js` | Existing inventory API validation and responses |
-| `backend/src/services/inventory.service.js` | Existing parameterized SQL and stock update logic |
-| `backend/test/inventory.routes.test.js` | Existing HTTP test patterns |
-| `backend/test/authorize-roles.test.js` | Existing authorization test patterns |
+| `server/src/app.js` | See how routes are mounted and how 404/health responses work |
+| `server/server.js` | Understand server startup and database connectivity check |
+| `server/src/config/database.js` | Understand the shared PostgreSQL pool |
+| `server/src/routes/auth.routes.js` | Existing route and authentication pattern |
+| `server/src/middleware/auth.middleware.js` | How JWT authentication works |
+| `server/src/middleware/authorize-roles.js` | How role restrictions work |
+| `server/src/routes/inventory.routes.js` | Existing inventory API validation and responses |
+| `server/src/services/inventory.service.js` | Existing parameterized SQL and stock update logic |
+| `server/test/inventory.routes.test.js` | Existing HTTP test patterns |
+| `server/test/authorize-roles.test.js` | Existing authorization test patterns |
 
 ## 4. Database schema currently present
 
@@ -110,7 +110,7 @@ The existing migrations create these tables:
 Migration files currently in the repository:
 
 ```text
-backend/migrations/
+server/migrations/
 ├── 1791302634749_create-categories.js
 ├── 1791375780922_create-users.js
 ├── 1791479591493_products.js
@@ -147,7 +147,7 @@ node --version
 npm --version
 ```
 
-Use a Node.js version compatible with the dependencies in `backend/package.json`. If the repository later adds an `.nvmrc` or an `engines` field, follow that version.
+Use a Node.js version compatible with the dependencies in `server/package.json`. If the repository later adds an `.nvmrc` or an `engines` field, follow that version.
 
 ## 6. Clone the repository
 
@@ -196,11 +196,11 @@ A Neon branch is an isolated database branch. Schema or data changes in one bran
 From the repository root:
 
 ```bash
-cd backend
+cd server
 cp .env.example .env
 ```
 
-Open `backend/.env` in your editor and fill in the values locally:
+Open `server/.env` in your editor and fill in the values locally:
 
 ```dotenv
 DATABASE_URL=your_own_neon_postgresql_connection_string
@@ -218,7 +218,7 @@ Notes:
 
 ### C. Install backend dependencies
 
-Make sure your terminal is inside the `backend` directory:
+Make sure your terminal is inside the `server` directory:
 
 ```bash
 npm install
@@ -237,6 +237,18 @@ This applies pending migrations to the database selected by your local `DATABASE
 Run it only after checking that `.env` points to your own assigned development branch. Never point it at production or another developer's database.
 
 If the project lead tells you that your Neon branch already has the schema or migration history has been initialized, do not attempt to reset or re-baseline it. Ask before running any repair or destructive command.
+
+#### Order timestamps on existing databases
+
+Migration `1794400000000_order-timestamps` converts both order timestamps to timezone-aware values. Empty order tables migrate automatically. For a populated table, establish the timezone that writers used for the historical values. If writers used different zones or ambiguous local times, reconcile those rows before conversion. The migration takes an exclusive lock on orders, so schedule it during a maintenance window.
+
+For example, when historical values are confirmed to be UTC, run the following from `server/`:
+
+```bash
+PGOPTIONS='-c invenkai.order_timezone=UTC' npm run migrate -- up
+```
+
+Use the same verified zone with `npm run migrate -- down` to roll back this migration while it is the latest applied migration. Converting back to local timestamps discards timezone information.
 
 ### E. Verify the database connection
 
@@ -267,7 +279,7 @@ Stop the development server with `Ctrl + C`.
 
 ## 8. Backend commands
 
-Run these commands from the `backend` directory:
+Run these commands from the `server` directory:
 
 | Command | Purpose |
 |---|---|
@@ -383,11 +395,11 @@ Only the project lead should merge PRs unless the team explicitly changes this p
 
 ### `npm run dev` says missing script
 
-Make sure the terminal is in `InvenKai/backend`, not the repository root. The dev script is defined in `backend/package.json`.
+Make sure the terminal is in `InvenKai/backend`, not the repository root. The dev script is defined in `server/package.json`.
 
 ### Database connection fails
 
-- Confirm that `backend/.env` exists.
+- Confirm that `server/.env` exists.
 - Confirm `DATABASE_URL` belongs to your assigned Neon branch.
 - Check that the connection string is complete and has not been accidentally quoted or split.
 - Confirm the Neon project/branch is active and accessible.
@@ -395,7 +407,7 @@ Make sure the terminal is in `InvenKai/backend`, not the repository root. The de
 
 ### API returns 404
 
-Check the exact route path and HTTP method. Then confirm the route is mounted in `backend/src/app.js`.
+Check the exact route path and HTTP method. Then confirm the route is mounted in `server/src/app.js`.
 
 ### Protected API returns 401
 
@@ -428,11 +440,21 @@ If you are new to the repository, follow this order:
 1. Read this guide completely.
 2. Read the root `README.md` for the product vision.
 3. Clone the repository and inspect the folder structure.
-4. Read `backend/src/app.js`, `backend/src/routes/inventory.routes.js`, and `backend/src/services/inventory.service.js`.
-5. Set up your own Neon branch and local `backend/.env`.
+4. Read `server/src/app.js`, `server/src/routes/inventory.routes.js`, and `server/src/services/inventory.service.js`.
+5. Set up your own Neon branch and local `server/.env`.
 6. Install dependencies, apply migrations, start the backend, and check `/health`.
 7. Run `npm test`.
 8. Read your assigned GitHub issue and all its references.
 9. Start work on a feature branch.
 
 **If anything in this guide conflicts with the current code or your assigned issue, stop and confirm with the project lead before proceeding.**
+
+### Redis isolation for backend integration tests
+
+Use separate Redis server processes. Redis Pub/Sub channels span all logical databases on a server. Start a disposable second local instance in a separate terminal, with its own working directory:
+
+```bash
+redis-server --bind 127.0.0.1 --port 6380 --dir "$(mktemp -d)" --save '' --appendonly no
+```
+
+Set `REDIS_URL=redis://127.0.0.1:6379` and `TEST_REDIS_URL=redis://127.0.0.1:6380` in `server/.env`. Both instances must be reachable for integration tests. Test startup compares the endpoints and the Redis server IDs from `INFO SERVER` before exposing the test client to BullMQ, caching or Pub/Sub. Grant the test setup read access to that command on both instances. Stop the disposable server with Ctrl-C.

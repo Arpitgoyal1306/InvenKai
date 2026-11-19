@@ -245,7 +245,7 @@ idempotent.
 
 ## Commands
 
-From `backend/`:
+From `server/`:
 
 ```bash
 npm ci

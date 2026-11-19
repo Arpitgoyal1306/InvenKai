@@ -74,3 +74,25 @@ npm run dev
 
 - Group Leader: *Arpit Goyal*
 - Group Members: *Arpit Chhimpa ,Arnav Goyal ,Pranay Raut*
+
+## Client and server
+
+- [`client/`](client/) contains the React application and its own npm lockfile.
+- [`server/`](server/) contains the Express API, PostgreSQL migrations, and receipt worker and dispatcher.
+
+For local development, set up `server/.env` from `server/.env.example`. From the repository root, run `npm --prefix server ci`, `npm --prefix client ci`, and `npm --prefix server run migrate up`. Start `npm --prefix server start` and `npm --prefix client run dev` in separate terminals. Vite proxies API and WebSocket traffic to port 5001 by default.
+
+### Deploy on one origin
+
+Build from the repository root with `docker build -t invenkai .`. Configure PostgreSQL and Redis URLs, `JWT_SECRET`, and `CLIENT_URL` (the public HTTPS origin). For Google sign-in, configure both Google credentials and register that origin plus `/home` as the redirect URI.
+
+Run these commands using the same image and environment configuration:
+
+| Process | Command |
+| --- | --- |
+| Migrate once before starting the new release | `npm run migrate up` |
+| Web app and API | `npm start` |
+| Receipt outbox dispatcher | `npm run dispatcher:orders` |
+| Receipt worker | `npm run worker:orders` |
+
+The image runs these commands from `/app/server` and serves the frontend, API, `/health`, and `/ws` on the configured port. The same layout also works without Docker after building `client/dist` and starting the server with `NODE_ENV=production`. If there are legacy orders predating the timestamp migration, use the [historical timezone instructions](DEVELOPER_ONBOARDING.md#d-apply-database-migrations) before migrating.
