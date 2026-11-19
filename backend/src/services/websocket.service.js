@@ -11,6 +11,7 @@ function createWebSocketService({
   logger = console,
   retryBaseMs = 1000,
   retryMaxMs = 30000,
+  closeTimeoutMs = 5000,
   setTimeoutFn = setTimeout,
   clearTimeoutFn = clearTimeout,
 } = {}) {
@@ -472,7 +473,7 @@ function createWebSocketService({
 
   // Graceful shutdown
 
-  function close() {
+  function close({ timeoutMs = closeTimeoutMs } = {}) {
     if (closePromise) {
       return closePromise;
     }
@@ -509,11 +510,27 @@ function createWebSocketService({
       clients.clear();
 
       if (webSocketServer) {
-        await new Promise((resolve) => {
-          webSocketServer.close(() => resolve());
-        });
-
-        webSocketServer = null;
+        let wssTimer = null;
+        try {
+          const wssClosePromise = new Promise((resolve) => {
+            webSocketServer.close(() => resolve());
+          });
+          await Promise.race([
+            wssClosePromise,
+            new Promise((resolve) => {
+              wssTimer = setTimeoutFn(resolve, timeoutMs);
+              wssTimer?.unref?.();
+            }),
+          ]);
+        } catch (error) {
+          logger.error("[WebSocket] Server close error:", error.message);
+        } finally {
+          if (wssTimer !== null) {
+            clearTimeoutFn(wssTimer);
+            wssTimer = null;
+          }
+          webSocketServer = null;
+        }
       }
 
       const currentSubscriber = subscriber;
@@ -523,11 +540,20 @@ function createWebSocketService({
       isSubscribed = false;
 
       if (currentSubscriber) {
+        let subTimer = null;
         try {
           if (pendingConnection) {
             currentSubscriber.destroy();
           } else if (currentSubscriber.isOpen && currentSubscriber.isReady) {
-            await currentSubscriber.close();
+            const subClosePromise = Promise.resolve().then(() => currentSubscriber.close());
+            subClosePromise.catch(() => {});
+            await Promise.race([
+              subClosePromise,
+              new Promise((resolve) => {
+                subTimer = setTimeoutFn(resolve, timeoutMs);
+                subTimer?.unref?.();
+              }),
+            ]);
           } else if (currentSubscriber.isOpen) {
             currentSubscriber.destroy();
           }
@@ -540,11 +566,31 @@ function createWebSocketService({
           if (currentSubscriber.isOpen) {
             currentSubscriber.destroy();
           }
+        } finally {
+          if (subTimer !== null) {
+            clearTimeoutFn(subTimer);
+            subTimer = null;
+          }
         }
       }
 
       if (pendingConnection) {
-        await pendingConnection.catch(() => false);
+        let connTimer = null;
+        try {
+          const safeConn = Promise.resolve(pendingConnection).catch(() => false);
+          await Promise.race([
+            safeConn,
+            new Promise((resolve) => {
+              connTimer = setTimeoutFn(resolve, timeoutMs);
+              connTimer?.unref?.();
+            }),
+          ]);
+        } finally {
+          if (connTimer !== null) {
+            clearTimeoutFn(connTimer);
+            connTimer = null;
+          }
+        }
       }
     })();
 

@@ -2,7 +2,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const net = require("node:net");
-const { once } = require("node:events");
+const { once, EventEmitter } = require("node:events");
 const WebSocket = require("ws");
 
 const { createWebSocketService } = require("../src/services/websocket.service");
@@ -519,4 +519,32 @@ test("destroys pending upgrade sockets during shutdown", async () => {
     clientSocket?.destroy();
     await context.close();
   }
+});
+
+test("close bounds subscriber connection when connect never resolves", async () => {
+  let destroyed = false;
+  const mockSubscriber = new EventEmitter();
+  mockSubscriber.connect = () => new Promise(() => {}); // never resolves
+  mockSubscriber.destroy = () => { destroyed = true; };
+
+  const mockPublisher = new EventEmitter();
+  mockPublisher.isReady = true;
+  mockPublisher.duplicate = () => mockSubscriber;
+
+  const service = createWebSocketService({
+    getRedisClient: () => mockPublisher,
+    closeTimeoutMs: 25,
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  void service.startSubscriber();
+
+  let timedOut = false;
+  const safetyTimeout = setTimeout(() => { timedOut = true; }, 2000);
+
+  await service.close();
+  clearTimeout(safetyTimeout);
+
+  assert.equal(timedOut, false, "close resolved within bounded deadline");
+  assert.equal(destroyed, true, "pending subscriber was destroyed");
 });

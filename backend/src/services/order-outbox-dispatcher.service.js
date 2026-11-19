@@ -12,9 +12,11 @@ const QUEUE_CLOSE_TIMEOUT_MS = 4000;
 
 function withTimeout(promise, timeoutMs, message) {
   let timer;
+  const operationPromise = Promise.resolve(promise);
+  operationPromise.catch(() => {});
 
   return Promise.race([
-    Promise.resolve(promise),
+    operationPromise,
     new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error(message)), timeoutMs);
     }),

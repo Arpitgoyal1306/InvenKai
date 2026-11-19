@@ -26,6 +26,9 @@ function createServerManager({
   clearTimeoutFn = clearTimeout,
   startupTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
   redisInitTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
+  websocketShutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
+  httpShutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
+  redisCloseTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
   dbShutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
 } = {}) {
   let httpServer = null;
@@ -75,7 +78,17 @@ function createServerManager({
         // Shutdown may have started while Redis was connecting.
         if (isShuttingDown) {
           try {
-            await redisManager.closeRedis();
+            let closeTimer = null;
+            await Promise.race([
+              redisManager.closeRedis(),
+              new Promise((resolve) => {
+                closeTimer = setTimeoutFn(resolve, redisCloseTimeoutMs);
+                closeTimer?.unref?.();
+              }),
+            ]);
+            if (closeTimer !== null) {
+              clearTimeoutFn(closeTimer);
+            }
           } catch (closeError) {
             logger.error("Redis shutdown cleanup failed:", closeError.message);
           }
@@ -102,7 +115,17 @@ function createServerManager({
         // Shutdown may have started while the subscriber was starting.
         if (isShuttingDown) {
           try {
-            await redisManager.closeRedis();
+            let closeTimer = null;
+            await Promise.race([
+              redisManager.closeRedis(),
+              new Promise((resolve) => {
+                closeTimer = setTimeoutFn(resolve, redisCloseTimeoutMs);
+                closeTimer?.unref?.();
+              }),
+            ]);
+            if (closeTimer !== null) {
+              clearTimeoutFn(closeTimer);
+            }
           } catch {}
           return false;
         }
@@ -309,12 +332,14 @@ function createServerManager({
     }
 
     let shutdownIncomplete = false;
+    let redisCloseFailed = false;
 
     // 3. Immediately invoke the Redis manager's cancellation/close mechanism
     // so any pending connection socket is destroyed without waiting indefinitely.
     const redisClosePromise = Promise.resolve()
       .then(() => redisManager.closeRedis())
       .catch((error) => {
+        redisCloseFailed = true;
         shutdownIncomplete = true;
         logger.error("Redis shutdown failed:", error.message);
         setExitCode(1);
@@ -381,44 +406,130 @@ function createServerManager({
       }
 
       // 3. Stop WebSocket upgrades, clients, retries and subscriber activity
+      let wsCloseTimer = null;
+      let wsCloseTimedOut = false;
       try {
-        await websocketService.close();
-        logger.log("WebSocket service closed.");
+        const wsClosePromise = Promise.resolve().then(() =>
+          websocketService.close({ timeoutMs: websocketShutdownTimeoutMs }),
+        );
+        wsClosePromise.catch(() => {});
+        await Promise.race([
+          wsClosePromise,
+          new Promise((resolve) => {
+            wsCloseTimer = setTimeoutFn(() => {
+              wsCloseTimedOut = true;
+              resolve();
+            }, websocketShutdownTimeoutMs);
+            wsCloseTimer?.unref?.();
+          }),
+        ]);
+
+        if (wsCloseTimedOut) {
+          shutdownIncomplete = true;
+          logger.error("WebSocket shutdown did not settle before deadline");
+          setExitCode(1);
+        } else {
+          logger.log("WebSocket service closed.");
+        }
       } catch (error) {
         shutdownIncomplete = true;
         logger.error("WebSocket shutdown failed:", error.message);
         setExitCode(1);
+      } finally {
+        if (wsCloseTimer !== null) {
+          clearTimeoutFn(wsCloseTimer);
+          wsCloseTimer = null;
+        }
       }
 
       // 4. Stop accepting new HTTP connections and wait for active requests
       if (httpServer) {
-        await new Promise((resolve) => {
-          if (!httpServer.listening) {
-            resolve();
-            return;
-          }
-          httpServer.close((error) => {
-            if (error) {
-              shutdownIncomplete = true;
-              logger.error("HTTP server shutdown failed:", error.message);
-              setExitCode(1);
-            } else {
-              logger.log("HTTP server closed.");
+        let httpCloseTimer = null;
+        let httpCloseTimedOut = false;
+        try {
+          const httpCloseOp = new Promise((resolve) => {
+            if (!httpServer.listening) {
+              resolve();
+              return;
             }
-            resolve();
+            httpServer.close((error) => {
+              if (error) {
+                shutdownIncomplete = true;
+                logger.error("HTTP server shutdown failed:", error.message);
+                setExitCode(1);
+              } else {
+                logger.log("HTTP server closed.");
+              }
+              resolve();
+            });
           });
-        });
-        httpServer = null;
+
+          // Stop accepting new requests and close idle keep-alive connections
+          httpServer.closeIdleConnections?.();
+
+          await Promise.race([
+            httpCloseOp,
+            new Promise((resolve) => {
+              httpCloseTimer = setTimeoutFn(() => {
+                httpCloseTimedOut = true;
+                resolve();
+              }, httpShutdownTimeoutMs);
+              httpCloseTimer?.unref?.();
+            }),
+          ]);
+
+          if (httpCloseTimedOut) {
+            shutdownIncomplete = true;
+            logger.error(
+              "HTTP server shutdown did not settle before deadline; forced connection closure applied",
+            );
+            setExitCode(1);
+            httpServer.closeAllConnections?.();
+          }
+        } catch (error) {
+          shutdownIncomplete = true;
+          logger.error("HTTP server shutdown error:", error.message);
+          setExitCode(1);
+        } finally {
+          if (httpCloseTimer !== null) {
+            clearTimeoutFn(httpCloseTimer);
+            httpCloseTimer = null;
+          }
+          httpServer = null;
+        }
       }
 
       // 5. Ensure the Redis close initiated at start of shutdown has finished
+      let redisCloseTimer = null;
+      let redisCloseTimedOut = false;
       try {
-        await redisClosePromise;
-        logger.log("Redis connection closed.");
+        await Promise.race([
+          redisClosePromise,
+          new Promise((resolve) => {
+            redisCloseTimer = setTimeoutFn(() => {
+              redisCloseTimedOut = true;
+              resolve();
+            }, redisCloseTimeoutMs);
+            redisCloseTimer?.unref?.();
+          }),
+        ]);
+
+        if (redisCloseTimedOut) {
+          shutdownIncomplete = true;
+          logger.error("Redis shutdown did not settle before deadline");
+          setExitCode(1);
+        } else if (!redisCloseFailed) {
+          logger.log("Redis connection closed.");
+        }
       } catch (error) {
         shutdownIncomplete = true;
         logger.error("Redis shutdown failed:", error.message);
         setExitCode(1);
+      } finally {
+        if (redisCloseTimer !== null) {
+          clearTimeoutFn(redisCloseTimer);
+          redisCloseTimer = null;
+        }
       }
 
       // 6. Terminal shutdown closes the PostgreSQL connection pool exactly once
@@ -428,6 +539,7 @@ function createServerManager({
         let dbEndTimedOut = false;
         try {
           const dbEndPromise = Promise.resolve().then(() => db.end());
+          dbEndPromise.catch(() => {});
           await Promise.race([
             dbEndPromise,
             new Promise((resolve) => {

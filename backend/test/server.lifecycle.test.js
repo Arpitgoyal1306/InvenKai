@@ -1,8 +1,15 @@
-const { test } = require("node:test");
+const { test, after } = require("node:test");
 const assert = require("node:assert/strict");
 const EventEmitter = require("node:events");
 
 const { createServerManager } = require("../server");
+
+// Maintain an active test-suite handle so that tests exercising production .unref() timers
+// do not cause premature event-loop resolution in CI environments.
+const suiteKeepAlive = setInterval(() => {}, 60000);
+after(() => {
+  clearInterval(suiteKeepAlive);
+});
 
 function createMockLogger() {
   const logs = [];
@@ -654,10 +661,13 @@ test("Issue 2: 5-second fallback timer triggers shutdown progression when Redis 
   // setTimeoutFn fires callback after 30ms to simulate the 5000ms safety timeout expiring
   const setTimeoutFn = (callback, ms) => {
     configuredDelay = ms;
+    const delay = ms === 5000 ? 30 : ms;
     const realTimer = setTimeout(() => {
-      timerFired = true;
+      if (ms === 5000) {
+        timerFired = true;
+      }
       callback();
-    }, 30);
+    }, delay);
     fallbackTimerId = realTimer;
     return realTimer;
   };
@@ -691,6 +701,7 @@ test("Issue 2: 5-second fallback timer triggers shutdown progression when Redis 
     httpModule: createMockHttpModule(),
     websocketService: wsService,
     logger,
+    redisCloseTimeoutMs: 500,
     setTimeoutFn,
     clearTimeoutFn,
   });
@@ -992,9 +1003,16 @@ test("Issue 4: startup resolves late after shutdown has begun, and no HTTP, Redi
   const startPromise = manager.startServer();
   const shutdownPromise = manager.shutdown("SIGTERM");
 
+  let timedOut19 = false;
+  const safetyTimeout19 = setTimeout(() => {
+    timedOut19 = true;
+  }, 3000);
+
   // Await shutdown completion first
   await shutdownPromise;
+  clearTimeout(safetyTimeout19);
 
+  assert.strictEqual(timedOut19, false, "shutdown completed within bound");
   assert.strictEqual(manager.isShuttingDown(), true);
 
   // Now resolve the late startup query after shutdown has already finished
@@ -1039,7 +1057,12 @@ test("Issue 4: concurrent shutdown calls while startup is pending share the same
   assert.strictEqual(shut1, shut2, "first and second shutdown calls return identical promise");
   assert.strictEqual(shut2, shut3, "second and third shutdown calls return identical promise");
 
+  let timedOut20 = false;
+  const safetyTimeout20 = setTimeout(() => { timedOut20 = true; }, 3000);
   await shut1;
+  clearTimeout(safetyTimeout20);
+
+  assert.strictEqual(timedOut20, false, "shutdown completed within bound");
   assert.strictEqual(db.endCalls, 1, "database pool closed once despite concurrent calls");
 });
 
@@ -1066,7 +1089,12 @@ test("Issue 4: database pool cleanup happens exactly once, even when startup rem
 
   void manager.startServer();
 
+  let timedOut21 = false;
+  const safetyTimeout21 = setTimeout(() => { timedOut21 = true; }, 3000);
   await manager.shutdown("TERMINAL");
+  clearTimeout(safetyTimeout21);
+
+  assert.strictEqual(timedOut21, false, "shutdown completed within bound");
   assert.strictEqual(endCallCount, 1, "pool.end() called once on initial shutdown");
 
   // Subsequent explicit shutdown after completion
@@ -1408,4 +1436,264 @@ test("Issue 1 (Process Termination): child process with unresolved PostgreSQL qu
     errOutput.includes("Server shutdown was incomplete; terminating process to release unmanaged handles"),
     "stderr contains forced termination diagnostic",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Additional Production Bounded Shutdown Regression Tests (PR #48)
+// ---------------------------------------------------------------------------
+
+test("Bounded Shutdown: HTTP server close callback never settling triggers timeout and forced closure", async () => {
+  let closeAllConnectionsCalled = false;
+  let closeIdleConnectionsCalled = false;
+
+  const mockHttpServer = new EventEmitter();
+  mockHttpServer.listening = false;
+  mockHttpServer.listen = (port, cb) => {
+    mockHttpServer.listening = true;
+    if (typeof cb === "function") process.nextTick(cb);
+    return mockHttpServer;
+  };
+  mockHttpServer.close = (cb) => {
+    // Deliberately does NOT call cb, simulating in-flight HTTP connection hanging
+  };
+  mockHttpServer.closeIdleConnections = () => {
+    closeIdleConnectionsCalled = true;
+  };
+  mockHttpServer.closeAllConnections = () => {
+    closeAllConnectionsCalled = true;
+  };
+
+  const httpModule = {
+    createServer: () => mockHttpServer,
+  };
+
+  const logger = createMockLogger();
+  const exitCodes = [];
+
+  const manager = createServerManager({
+    port: 9999,
+    httpModule,
+    db: { async query() { return { rows: [] }; }, async end() {} },
+    redisManager: createMockRedisManager(),
+    websocketService: createMockWebSocketService(),
+    logger,
+    httpShutdownTimeoutMs: 25,
+    setExitCode: (code) => exitCodes.push(code),
+  });
+
+  await manager.startServer();
+
+  let timedOut = false;
+  const safetyTimeout = setTimeout(() => { timedOut = true; }, 3000);
+  await manager.shutdown("SIGTERM");
+  clearTimeout(safetyTimeout);
+
+  assert.strictEqual(timedOut, false, "shutdown completed within bound");
+  assert.strictEqual(closeIdleConnectionsCalled, true, "closeIdleConnections was attempted");
+  assert.strictEqual(closeAllConnectionsCalled, true, "closeAllConnections was called on timeout");
+  assert.ok(exitCodes.includes(1), "exit code 1 set because HTTP close did not settle");
+  assert.ok(
+    logger.logs.some(([level, ...args]) =>
+      level === "error" && args.join(" ").includes("HTTP server shutdown did not settle before deadline"),
+    ),
+    "logged HTTP shutdown deadline diagnostic",
+  );
+});
+
+test("Bounded Shutdown: Redis close never settling triggers timeout and incomplete shutdown", async () => {
+  const redisManager = {
+    client: null,
+    isRedisReady: () => false,
+    async connectRedis() { return false; },
+    closeRedis() {
+      // Deliberately returns a Promise that never settles
+      return new Promise(() => {});
+    },
+  };
+
+  const logger = createMockLogger();
+  const exitCodes = [];
+
+  const manager = createServerManager({
+    port: 9999,
+    httpModule: createMockHttpModule(),
+    db: { async query() { return { rows: [] }; }, async end() {} },
+    redisManager,
+    websocketService: createMockWebSocketService(),
+    logger,
+    redisCloseTimeoutMs: 25,
+    setExitCode: (code) => exitCodes.push(code),
+  });
+
+  await manager.startServer();
+
+  let timedOut = false;
+  const safetyTimeout = setTimeout(() => { timedOut = true; }, 3000);
+  await manager.shutdown("SIGTERM");
+  clearTimeout(safetyTimeout);
+
+  assert.strictEqual(timedOut, false, "shutdown completed within bound");
+  assert.ok(exitCodes.includes(1), "exit code 1 set on Redis timeout");
+  assert.ok(
+    logger.logs.some(([level, ...args]) =>
+      level === "error" && args.join(" ").includes("Redis shutdown did not settle before deadline"),
+    ),
+    "logged Redis shutdown deadline diagnostic",
+  );
+  assert.strictEqual(
+    logger.logs.some(([level, ...args]) => level === "log" && args.join(" ").includes("Redis connection closed.")),
+    false,
+    "did NOT falsely log Redis as closed",
+  );
+});
+
+test("Bounded Shutdown: WebSocket shutdown never settling triggers timeout and incomplete shutdown", async () => {
+  const wsService = {
+    attach() {},
+    async startSubscriber() { return true; },
+    close() {
+      // Deliberately never settles
+      return new Promise(() => {});
+    },
+  };
+
+  const logger = createMockLogger();
+  const exitCodes = [];
+
+  const manager = createServerManager({
+    port: 9999,
+    httpModule: createMockHttpModule(),
+    db: { async query() { return { rows: [] }; }, async end() {} },
+    redisManager: createMockRedisManager(),
+    websocketService: wsService,
+    logger,
+    websocketShutdownTimeoutMs: 25,
+    setExitCode: (code) => exitCodes.push(code),
+  });
+
+  await manager.startServer();
+
+  let timedOut = false;
+  const safetyTimeout = setTimeout(() => { timedOut = true; }, 3000);
+  await manager.shutdown("SIGTERM");
+  clearTimeout(safetyTimeout);
+
+  assert.strictEqual(timedOut, false, "shutdown completed within bound");
+  assert.ok(exitCodes.includes(1), "exit code 1 set on WebSocket timeout");
+  assert.ok(
+    logger.logs.some(([level, ...args]) =>
+      level === "error" && args.join(" ").includes("WebSocket shutdown did not settle before deadline"),
+    ),
+    "logged WebSocket shutdown deadline diagnostic",
+  );
+});
+
+test("Bounded Shutdown: late Redis close rejection after timeout does not produce unhandled rejection", async () => {
+  let rejectClose;
+  const pendingClose = new Promise((_, reject) => {
+    rejectClose = reject;
+  });
+
+  const redisManager = {
+    client: null,
+    isRedisReady: () => false,
+    async connectRedis() { return false; },
+    closeRedis() {
+      return pendingClose;
+    },
+  };
+
+  const logger = createMockLogger();
+  const exitCodes = [];
+
+  const manager = createServerManager({
+    port: 9999,
+    httpModule: createMockHttpModule(),
+    db: { async query() { return { rows: [] }; }, async end() {} },
+    redisManager,
+    websocketService: createMockWebSocketService(),
+    logger,
+    redisCloseTimeoutMs: 20,
+    setExitCode: (code) => exitCodes.push(code),
+  });
+
+  await manager.startServer();
+  await manager.shutdown("SIGTERM");
+
+  // Late rejection after shutdown has completed
+  rejectClose(new Error("Late Redis socket error"));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(exitCodes.includes(1), "exit code 1 was set");
+});
+
+test("Bounded Shutdown: late PostgreSQL pool rejection after timeout does not produce unhandled rejection", async () => {
+  let rejectEnd;
+  const pendingEnd = new Promise((_, reject) => {
+    rejectEnd = reject;
+  });
+
+  const db = {
+    async query() { return { rows: [] }; },
+    end() {
+      return pendingEnd;
+    },
+  };
+
+  const logger = createMockLogger();
+  const exitCodes = [];
+
+  const manager = createServerManager({
+    port: 9999,
+    httpModule: createMockHttpModule(),
+    db,
+    redisManager: createMockRedisManager(),
+    websocketService: createMockWebSocketService(),
+    logger,
+    dbShutdownTimeoutMs: 20,
+    setExitCode: (code) => exitCodes.push(code),
+  });
+
+  await manager.startServer();
+  await manager.shutdown("SIGTERM");
+
+  // Late rejection after shutdown has settled
+  rejectEnd(new Error("Late Pool connection drop"));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(exitCodes.includes(1), "exit code 1 was set");
+});
+
+test("Bounded Shutdown: abnormal shutdown invokes terminateProcess exactly once despite repeated signals", async () => {
+  const terminationCalls = [];
+  const exitCodes = [];
+
+  const manager = createServerManager({
+    port: 9999,
+    httpModule: createMockHttpModule(),
+    db: {
+      query: () => new Promise(() => {}),
+      end: () => new Promise(() => {}),
+    },
+    redisManager: createMockRedisManager(),
+    websocketService: createMockWebSocketService(),
+    logger: createMockLogger(),
+    startupTimeoutMs: 20,
+    dbShutdownTimeoutMs: 20,
+    setExitCode: (code) => exitCodes.push(code),
+    terminateProcess: (code) => terminationCalls.push(code),
+  });
+
+  void manager.startServer();
+
+  const shut1 = manager.shutdown("SIGTERM");
+  const shut2 = manager.shutdown("SIGINT");
+  const shut3 = manager.shutdown("SIGTERM");
+
+  await Promise.all([shut1, shut2, shut3]);
+
+  // Repeated shutdown calls after completion
+  await manager.shutdown("POST_TERMINAL");
+
+  assert.deepStrictEqual(terminationCalls, [1], "terminateProcess(1) was called exactly once");
 });
