@@ -395,7 +395,7 @@ Only the project lead should merge PRs unless the team explicitly changes this p
 
 ### `npm run dev` says missing script
 
-Make sure the terminal is in `InvenKai/backend`, not the repository root. The dev script is defined in `server/package.json`.
+Make sure the terminal is in `InvenKai/server`, not the repository root. The dev script is defined in `server/package.json`.
 
 ### Database connection fails
 

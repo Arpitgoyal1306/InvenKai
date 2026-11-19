@@ -80,11 +80,20 @@ npm run dev
 - [`client/`](client/) contains the React application and its own npm lockfile.
 - [`server/`](server/) contains the Express API, PostgreSQL migrations, and receipt worker and dispatcher.
 
-For local development, set up `server/.env` from `server/.env.example`. From the repository root, run `npm --prefix server ci`, `npm --prefix client ci`, and `npm --prefix server run migrate up`. Start `npm --prefix server start` and `npm --prefix client run dev` in separate terminals. Vite proxies API and WebSocket traffic to port 5001 by default.
+For local development, set up `server/.env` from `server/.env.example`. From the repository root, run `npm --prefix server ci`, `npm --prefix client ci`, and `npm --prefix server run migrate up`. Start `npm --prefix server start` and `npm --prefix client run dev` in separate terminals. Vite proxies API and WebSocket traffic to port 5001 by default. When running the server directly with a Redis process on your machine, set `REDIS_URL=redis://127.0.0.1:6379` for that local run.
+
+### Deploy the API on Render
+
+The Render Blueprint uses the Node runtime with `server` as the root directory, `npm install` as the build command, and `npm run start` as the start command. Enter the production values in Render, including the internal Redis URL and the public client origin. Deploy the React app separately and set its `VITE_API_URL` to the bare Render backend URL. Apply the database migrations before starting the first release.
 
 ### Deploy on one origin
 
-Build from the repository root with `docker build -t invenkai .`. Configure PostgreSQL and Redis URLs, `JWT_SECRET`, and `CLIENT_URL` (the public HTTPS origin). For Google sign-in, configure both Google credentials and register that origin plus `/home` as the redirect URI.
+With `server/.env` configured for the intended PostgreSQL database, run `docker compose up --build -d` from the repository root. Compose starts Redis on a private network at `redis://redis:6379`, runs migrations, then starts the web server, receipt dispatcher, and worker. Set `CLIENT_URL` in the deployment environment to the public HTTPS origin. If your host provides managed Redis, set its `REDIS_URL` in the deployment environment. Compose uses that value for the application processes.
+
+For a single image without Compose, use the commands below.
+Build from the repository root with `docker build -f server/Dockerfile -t invenkai .`. Configure PostgreSQL and Redis URLs, `JWT_SECRET`, and `CLIENT_URL` (the public HTTPS origin). For Google sign-in, configure both Google credentials and register that origin plus `/home` as the redirect URI.
+
+On Render, choose the Docker runtime, leave **Root Directory** blank, set **Dockerfile Path** to `server/Dockerfile`, and set **Docker Build Context Directory** to `.`. The image builds the React bundle from `client/` and runs Express from `server/`. Set the HTTP health check path to `/health`.
 
 Run these commands using the same image and environment configuration:
 

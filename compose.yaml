@@ -1,0 +1,49 @@
+x-invenkai: &invenkai
+  image: invenkai:local
+  build:
+    context: .
+    dockerfile: server/Dockerfile
+  env_file: server/.env
+  environment:
+    NODE_ENV: production
+    PORT: "5001"
+    CLIENT_URL: ${CLIENT_URL:-http://localhost:5001}
+    REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  migrate:
+    <<: *invenkai
+    command: ["npm", "run", "migrate", "up"]
+  web:
+    <<: *invenkai
+    ports:
+      - "5001:5001"
+    depends_on: &ready
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+  dispatcher:
+    <<: *invenkai
+    command: ["npm", "run", "dispatcher:orders"]
+    depends_on: *ready
+  worker:
+    <<: *invenkai
+    command: ["npm", "run", "worker:orders"]
+    depends_on: *ready
+
+volumes:
+  redis-data:

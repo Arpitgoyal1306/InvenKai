@@ -5,16 +5,16 @@ on:
     paths:
       - "server/**"
       - "client/**"
-      - "Dockerfile"
       - ".dockerignore"
+      - "compose.yaml"
       - ".github/workflows/backend-ci.yml"
   push:
     branches: ["main"]
     paths:
       - "server/**"
       - "client/**"
-      - "Dockerfile"
       - ".dockerignore"
+      - "compose.yaml"
       - ".github/workflows/backend-ci.yml"
 
 permissions:

@@ -23,7 +23,7 @@ Clone the repository and enter the backend:
 
 ```bash
 git clone https://github.com/Arpitgoyal1306/InvenKai.git
-cd InvenKai/backend
+cd InvenKai/server
 npm install
 ```
 

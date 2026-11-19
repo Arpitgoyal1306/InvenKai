@@ -9,7 +9,7 @@ npm ci
 npm run dev
 ```
 
-Open <http://localhost:5173>. Vite proxies `/api` and `/ws` to the server on port 5001. For separate hosting, copy `.env.example` to `.env.local`, set `VITE_API_URL`, and rebuild for production or restart the dev server. Staff WebSocket connections use the same host as the API. Only public configuration belongs in Vite environment variables.
+Open <http://localhost:5173>. Vite proxies `/api` and `/ws` to the server on port 5001. For separate hosting, copy `.env.example` to `.env.local`, set `VITE_API_URL` to the backend origin, such as `https://your-service.onrender.com`, and rebuild for production or restart the dev server. Staff WebSocket connections use the same host as the API. Only public configuration belongs in Vite environment variables.
 
 New accounts receive the customer role. Customers can browse the catalog, check stock, and check out. Inventory managers can manage products, stock, and suppliers and view reports. Admins can also check out, delete eligible products, and deactivate suppliers. The backend enforces permissions on every request. Sign-in persists for the current browser tab until logout or token expiry.
 
