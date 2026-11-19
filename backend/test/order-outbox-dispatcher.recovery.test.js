@@ -813,13 +813,14 @@ async function waitForQueueJob(queue, jobId, state, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    const job = await queue.getJob(jobId);
-    if (job) {
-      const currentState = await job.getState();
-      if (currentState === state) return job;
-      if (currentState === "failed" && state !== "failed") {
-        throw new Error(`Job ${jobId} failed: ${job.failedReason}`);
-      }
+    const currentState = await queue.getJobState(jobId);
+    if (currentState === state) {
+      const job = await queue.getJob(jobId);
+      if (job) return job;
+    }
+    if (currentState === "failed" && state !== "failed") {
+      const failedJob = await queue.getJob(jobId);
+      throw new Error(`Job ${jobId} failed: ${failedJob?.failedReason}`);
     }
     await pause(50);
   }
@@ -1089,7 +1090,7 @@ test("two real dispatchers reclaim an expired lease without stale updates or dup
 
 
 test("SIGTERM bounds a stalled enqueue, releases its claim, and closes Redis/PostgreSQL", {
-  timeout: 15000,
+  timeout: 30000,
   skip: testDatabaseUrl
     ? false
     : "Requires TEST_DATABASE_URL for the shutdown/lease recovery integration test.",

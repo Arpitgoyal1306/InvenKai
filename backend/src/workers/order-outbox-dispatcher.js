@@ -8,6 +8,7 @@ const {
 } = require("../services/order-outbox-dispatcher.service");
 
 const POLL_INTERVAL_MS = 2000;
+const EMPTY_POLL_LOG_INTERVAL = 30;
 const SHUTDOWN_GRACE_MS = 12000;
 const QUEUE_CLOSE_TIMEOUT_MS = 4000;
 const REDIS_CLOSE_TIMEOUT_MS = 2000;
@@ -18,6 +19,7 @@ async function startDispatcher({
   redisManager = redis,
   createDispatcher = (options) => createOrderOutboxDispatcher(options),
   pollIntervalMs = POLL_INTERVAL_MS,
+  emptyPollLogInterval = EMPTY_POLL_LOG_INTERVAL,
   shutdownGraceMs = SHUTDOWN_GRACE_MS,
   queueCloseTimeoutMs = QUEUE_CLOSE_TIMEOUT_MS,
   redisCloseTimeoutMs = REDIS_CLOSE_TIMEOUT_MS,
@@ -39,6 +41,7 @@ async function startDispatcher({
   let running = false;
   let activePoll = null;
   let shutdownPromise = null;
+  let emptyPollCount = 0;
 
   function poll() {
     if (stopping || running) return Promise.resolve();
@@ -49,10 +52,24 @@ async function startDispatcher({
       try {
         const result = await dispatcher.dispatchBatch();
         if (result.claimed > 0) {
-          logger.info("[Outbox Dispatcher]", result);
+          emptyPollCount = 0;
+          logger.info?.("[Outbox Dispatcher]", result);
+        } else {
+          emptyPollCount += 1;
+          if (
+            emptyPollLogInterval > 0 &&
+            emptyPollCount % emptyPollLogInterval === 0
+          ) {
+            logger.info?.(
+              "[Outbox Dispatcher] Outbox idle; " +
+                emptyPollCount +
+                " consecutive empty polls.",
+            );
+          }
         }
       } catch (error) {
-        logger.error("[Outbox Dispatcher] Poll failed:", error.message);
+        emptyPollCount = 0;
+        logger.error?.("[Outbox Dispatcher] Poll failed:", error.message);
       } finally {
         running = false;
         if (activePoll === currentPoll) activePoll = null;
@@ -62,6 +79,12 @@ async function startDispatcher({
     activePoll = currentPoll;
     return currentPoll;
   }
+
+  logger.info?.(
+    "[Outbox Dispatcher] Started successfully; polling every " +
+      pollIntervalMs +
+      "ms.",
+  );
 
   // Do not await the initial poll. This allows SIGTERM handlers and the
   // shutdown handle to be installed even if Redis/PostgreSQL is slow.

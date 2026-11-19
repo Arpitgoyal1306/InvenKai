@@ -238,6 +238,13 @@ async function startOrderWorker({
   async function runReceiptProcessor(job, processReceipt) {
     const processorId = String(job.id || job.data?.orderId || "unknown");
     activeProcessorIds.add(processorId);
+    logger?.info?.(
+      "[Order Worker] Processing job " +
+        processorId +
+        " for order " +
+        (job.data?.orderId || "unknown") +
+        ".",
+    );
 
     try {
       return await processReceipt(job);
@@ -538,7 +545,7 @@ async function startOrderWorker({
     assertStartupActive();
 
     const connection = createRedisConnection(rawClient);
-    const processReceipt = createReceiptProcessor();
+    const processReceipt = createReceiptProcessor({ db, logger });
     assertStartupActive();
 
     worker = new WorkerClass(

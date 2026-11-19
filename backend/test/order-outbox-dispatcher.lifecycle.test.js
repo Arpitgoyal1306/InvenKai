@@ -195,3 +195,49 @@ test("exports documented Redis and PostgreSQL cleanup deadlines", () => {
   assert.equal(REDIS_CLOSE_TIMEOUT_MS, 2000);
   assert.equal(DATABASE_CLOSE_TIMEOUT_MS, 3000);
 });
+
+test("logs startup and periodic idle health diagnostics without logging every empty poll", async () => {
+  const logs = [];
+  let pollAttempt = 0;
+  const controller = await startDispatcher({
+    db: { async end() {} },
+    redisManager: { async closeRedis() {} },
+    createDispatcher: () => ({
+      async dispatchBatch() {
+        pollAttempt += 1;
+        if (pollAttempt === 2) {
+          throw new Error("Temporary database error");
+        }
+        return { claimed: 0, dispatched: 0, failed: 0 };
+      },
+      stop() {},
+      async close() {},
+    }),
+    pollIntervalMs: 60000,
+    emptyPollLogInterval: 3,
+    registerSignals: false,
+    logger: createLogger(logs),
+  });
+
+  // Poll #1 (startup): empty (count = 1).
+  // Poll #2: throws -> resets emptyPollCount to 0.
+  await controller.poll();
+  // Polls #3 and #4: empty (count = 1, 2) -> must not log idle yet.
+  await controller.poll();
+  await controller.poll();
+  assert.equal(
+    logs.filter((line) => line.includes("Outbox idle")).length,
+    0,
+    "failed poll must reset consecutive empty poll counter",
+  );
+
+  // Poll #5: third consecutive successful empty poll -> logs idle once.
+  await controller.poll();
+  await controller.shutdown("test");
+
+  const startupLogs = logs.filter((line) => line.includes("Started successfully"));
+  const idleLogs = logs.filter((line) => line.includes("Outbox idle; 3 consecutive empty polls"));
+
+  assert.equal(startupLogs.length, 1);
+  assert.equal(idleLogs.length, 1);
+});

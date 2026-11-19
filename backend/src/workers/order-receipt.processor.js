@@ -1,6 +1,6 @@
 const pool = require("../config/database");
 
-function createOrderReceiptProcessor({ db = pool } = {}) {
+function createOrderReceiptProcessor({ db = pool, logger = console } = {}) {
   return async function processOrderReceipt(job) {
     const orderId = job.data?.orderId;
     if (!orderId || !/^[1-9]\d*$/.test(String(orderId))) {
@@ -38,12 +38,28 @@ function createOrderReceiptProcessor({ db = pool } = {}) {
       [first.order_id, `INV-${first.order_id}`, first.user_id,
         first.total_amount, JSON.stringify(items)],
     );
-    if (inserted.rowCount === 1) return inserted.rows[0];
+    if (inserted.rowCount === 1) {
+      logger?.info?.(
+        "[Order Receipt Processor] Created receipt " +
+          inserted.rows[0].receipt_number +
+          " for order " +
+          first.order_id +
+          ".",
+      );
+      return inserted.rows[0];
+    }
 
     const existing = await db.query(
       `SELECT id, order_id, receipt_number, issued_at
        FROM receipts WHERE order_id = $1`,
       [first.order_id],
+    );
+    logger?.info?.(
+      "[Order Receipt Processor] Reused existing receipt " +
+        (existing.rows[0]?.receipt_number || `INV-${first.order_id}`) +
+        " for order " +
+        first.order_id +
+        ".",
     );
     return existing.rows[0];
   };
