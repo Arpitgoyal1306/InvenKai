@@ -1,6 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 
-const backendUrl = (import.meta.env.VITE_API_URL || "").trim().replace(/\/+$/, "");
+const backendUrl = (import.meta.env.VITE_API_URL || "")
+  .trim()
+  .replace(/\/+$/, "")
+  .replace(/\/api$/i, "");
 export const base = backendUrl + "/api";
 export const tokenKey = "invenkai.session";
 
