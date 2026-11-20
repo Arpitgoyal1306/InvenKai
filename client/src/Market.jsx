@@ -252,15 +252,7 @@ export function MarketShell({ user, logout, children }) {
       ];
   return (
     <MarketLive.Provider value={live}>
-      <div
-        className={
-          owner
-            ? "market market-owner"
-            : loc.pathname === "/explore"
-              ? "market market-discovery"
-              : "market"
-        }
-      >
+      <div className={owner ? "market market-owner" : "market"}>
         <header className="market-head">
           <Link to="/" aria-label="InvenKai home">
             <Brand compact />
@@ -417,41 +409,37 @@ export function Explore() {
   const shown = q.data?.stores || [];
   return (
     <>
-      <section className="discover-hero">
-        <div className="discover-intro">
+      <section className="directory-hero">
+        <div>
           <h1>Explore stores</h1>
           <p>
-            Browse independent shops, order what you love, and pick it up in
-            store.
+            Discover independent sellers. Shop their shelves and collect your
+            order in store.
           </p>
         </div>
         <img
-          src="/images/sample-shops/croissant.jpg"
-          alt="Fresh croissants dusted with flour on a dark worktop"
-          width="640"
-          height="512"
+          src="/images/market-hall.jpg"
+          alt="Sunlit neighborhood dining room with wooden tables"
         />
       </section>
-      <div className="discover-toolbar">
-        <div className="market-title directory-title">
-          <h2>Store directory</h2>
-          <small role="status">
-            {q.isPlaceholderData
-              ? "Updating results…"
-              : q.data
-                ? `${shown.length} ${shown.length === 1 ? "store" : "stores"} on this page`
-                : ""}
-          </small>
-        </div>
-        <Filters
-          categories={q.data?.categories || (cat ? [cat] : [])}
-          search={search}
-          setSearch={S}
-          category={cat}
-          setCategory={C}
-          label="Search stores"
-        />
+      <div className="market-title directory-title">
+        <h2>Store directory</h2>
+        <small role="status">
+          {q.isPlaceholderData
+            ? "Updating results…"
+            : q.data
+              ? `${shown.length} ${shown.length === 1 ? "store" : "stores"}`
+              : ""}
+        </small>
       </div>
+      <Filters
+        categories={q.data?.categories || (cat ? [cat] : [])}
+        search={search}
+        setSearch={S}
+        category={cat}
+        setCategory={C}
+        label="Search stores"
+      />
       <State
         query={q}
         empty={!shown.length}
@@ -472,9 +460,9 @@ export function Explore() {
                 <Photo src={s.cover || s.logo} name="" store />
               </Link>
               <div>
-                <small className="discover-category">{s.category}</small>
-                <h3>{s.name}</h3>
-                {s.description && <p>{s.description}</p>}
+                <small>{s.category}</small>
+                <h2>{s.name}</h2>
+                <p>{s.description}</p>
                 {s.products.length ? (
                   <ul
                     className="directory-products"
