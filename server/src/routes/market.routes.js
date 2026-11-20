@@ -2,6 +2,7 @@ const router = require("express").Router();
 const db = require("../config/database");
 const auth = require("../middleware/auth.middleware");
 const { createOrder } = require("../services/order.service");
+const { validPhone } = require("../utils/contact");
 const { randomUUID } = require("node:crypto");
 
 function fail(message, status = 400) {
@@ -19,9 +20,17 @@ function text(value, max, required = true) {
 function slug(value) {
   if (
     typeof value !== "string" ||
-    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) ||
     value.length < 3 ||
-    value.length > 68
+    value.length > 68 ||
+    value
+      .split("-")
+      .some(
+        (part) =>
+          !part ||
+          [...part].some(
+            (char) => !"abcdefghijklmnopqrstuvwxyz0123456789".includes(char),
+          ),
+      )
   )
     fail(
       "Use 3–68 lowercase letters, numbers or single hyphens for the store link.",
@@ -32,15 +41,25 @@ function image(value = "") {
   if (value === "") return "";
   if (typeof value !== "string" || value.length > 240000)
     fail("Choose a smaller image.");
-  const match = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+=*)$/.exec(
-    value,
-  );
-  if (!match) fail("Choose a PNG, JPEG or WebP image.");
-  const b = Buffer.from(match[2], "base64");
+  const [header, encoded, extra] = value.split(",");
+  const type = {
+    "data:image/png;base64": "png",
+    "data:image/jpeg;base64": "jpeg",
+    "data:image/webp;base64": "webp",
+  }[header];
+  if (
+    !["png", "jpeg", "webp"].includes(type) ||
+    !encoded ||
+    extra !== undefined
+  )
+    fail("Choose a PNG, JPEG or WebP image.");
+  const b = Buffer.from(encoded, "base64");
+  if (b.toString("base64").replace(/=+$/, "") !== encoded.replace(/=+$/, ""))
+    fail("Invalid image.");
   const ok =
-    match[1] === "jpeg"
+    type === "jpeg"
       ? b[0] === 255 && b[1] === 216 && b[2] === 255
-      : match[1] === "png"
+      : type === "png"
         ? b.subarray(0, 8).toString("hex") === "89504e470d0a1a0a"
         : b.toString("ascii", 0, 4) === "RIFF" &&
           b.toString("ascii", 8, 12) === "WEBP";
@@ -144,10 +163,7 @@ router.post("/stores/:slug/orders", auth, async (req, res) => {
         fail("Enter a valid " + field + ".");
       buyerDetails[field] = details[field].trim();
     }
-    if (
-      !/^[+()0-9 .-]+$/.test(buyerDetails.phone) ||
-      !/^\d{7,15}$/.test(buyerDetails.phone.replace(/\D/g, ""))
-    )
+    if (!validPhone(buyerDetails.phone))
       fail("Enter a valid contact phone number.");
     const order = await createOrder(
       req.user.id,

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, RefreshCw } from "lucide-react";
+import { Download, RefreshCw, ReceiptText } from "lucide-react";
 import { api, amount, dateTime, useData } from "./api";
 import { ActionForm, Modal, Pager, State, Table } from "./ui";
 
@@ -80,7 +80,7 @@ export function SupplierCatalog({ supplier, close }) {
   );
 }
 
-export function Receipt({ orderId }) {
+export function Receipt({ orderId, storeName, preview }) {
   const path = "/orders/" + orderId + "/receipt";
   const q = useQuery({
     queryKey: [path],
@@ -112,26 +112,67 @@ export function Receipt({ orderId }) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   return (
-    <section className="receipt">
-      <h3>Receipt</h3>
-      <State query={q}>
-        {receipt ? (
-          <>
-            <p>
-              {receipt.receipt_number} · {dateTime(receipt.issued_at)}
+    <>
+      {!receipt && preview}
+      <section className="receipt invoice" aria-label="Receipt">
+        <State query={q}>
+          {receipt ? (
+            <>
+              <header className="invoice-header">
+                <span className="invoice-icon">
+                  <ReceiptText size={23} />
+                </span>
+                <div>
+                  <h3>{storeName || "InvenKai"} receipt</h3>
+                  <p>
+                    {receipt.receipt_number} · {dateTime(receipt.issued_at)}
+                  </p>
+                </div>
+              </header>
+              <dl className="invoice-reference">
+                <div>
+                  <dt>Order</dt>
+                  <dd>#{orderId}</dd>
+                </div>
+                <div>
+                  <dt>Items</dt>
+                  <dd>
+                    {receipt.items.reduce(
+                      (sum, item) => sum + Number(item.quantity),
+                      0,
+                    )}
+                  </dd>
+                </div>
+              </dl>
+              <Table
+                heads={["Item", "Qty", "Unit price", "Amount"]}
+                rows={receipt.items.map((item, index) => ({
+                  key: index,
+                  cells: [
+                    item.productName,
+                    item.quantity,
+                    amount(item.unitPrice),
+                    amount(item.lineTotal),
+                  ],
+                }))}
+              />
+              <div className="invoice-total">
+                <span>Total</span>
+                <strong>{amount(receipt.total_amount)}</strong>
+              </div>
+              <button onClick={download}>
+                <Download size={16} /> Download receipt
+              </button>
+            </>
+          ) : (
+            <p role="status">
+              <ReceiptText size={18} /> Preparing your receipt. It will appear
+              here automatically.
             </p>
-            <button onClick={download}>
-              <Download size={16} />
-              Download receipt
-            </button>
-          </>
-        ) : (
-          <p role="status">
-            Awaiting receipt generation. This view updates automatically.
-          </p>
-        )}
-      </State>
-    </section>
+          )}
+        </State>
+      </section>
+    </>
   );
 }
 

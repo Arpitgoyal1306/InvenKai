@@ -12,6 +12,7 @@ function createToken(role) {
     {
       sub: "1",
       role,
+      authProvider: "google",
     },
     process.env.JWT_SECRET,
     { expiresIn: "1h" },

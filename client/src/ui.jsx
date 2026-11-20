@@ -7,9 +7,9 @@ import {
   X,
 } from "lucide-react";
 
-export function Brand() {
+export function Brand({ compact = false } = {}) {
   return (
-    <div className="brand">
+    <div className={compact ? "brand brand-market" : "brand"}>
       <span className="brand-mark">
         <Layers3 size={24} />
       </span>
@@ -85,7 +85,7 @@ export function Table({ heads, rows }) {
     </div>
   );
 }
-export function Modal({ title, close, children, busy = false }) {
+export function Modal({ title, close, children, busy = false, className }) {
   const ref = useRef(null);
   useEffect(() => {
     const dialog = ref.current;
@@ -94,6 +94,7 @@ export function Modal({ title, close, children, busy = false }) {
   }, []);
   return (
     <dialog
+      className={className}
       ref={ref}
       onCancel={(e) => {
         e.preventDefault();

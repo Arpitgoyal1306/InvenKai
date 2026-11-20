@@ -19,7 +19,11 @@ import {
   ShoppingBag,
   Search,
   ArrowLeft,
-  ChevronDown,
+  Settings,
+  LogOut,
+  ChevronRight,
+  Compass,
+  ReceiptText,
   Minus,
   Plus,
   Check,
@@ -110,43 +114,54 @@ export function MarketShell({ user, logout, children }) {
         ["/owner/settings", "Store settings"],
       ]
     : [
-        ["/explore", "Explore stores"],
-        ["/buyer/orders", "My orders"],
+        ["/explore", "Explore stores", Compass],
+        ["/buyer/orders", "My orders", ReceiptText],
       ];
   return (
     <div className={owner ? "market market-owner" : "market"}>
       <header className="market-head">
         <Link to="/" aria-label="InvenKai home">
-          <Brand />
+          <Brand compact />
         </Link>
         <nav aria-label={owner ? "Store navigation" : "Shopping navigation"}>
-          {links.map(([url, label]) => (
+          {links.map(([url, label, Icon]) => (
             <NavLink end key={url} to={url}>
+              {Icon && <Icon size={17} aria-hidden="true" />}
               {label}
             </NavLink>
           ))}
         </nav>
         <div className="market-head-actions">
-          {!owner && itemCount > 0 && (
+          {!owner && (
             <Link
               className="header-cart"
               to="/cart"
               aria-label={`View cart, ${itemCount} ${itemCount === 1 ? "item" : "items"}`}
             >
-              <ShoppingBag size={18} /> <span>{itemCount}</span>
+              <ShoppingBag size={19} />{" "}
+              {itemCount > 0 && <span>{itemCount}</span>}
             </Link>
           )}
           <details key={loc.pathname} className="account">
             <summary aria-label="Account menu">
               <AccountAvatar key={user?.avatar_url} url={user?.avatar_url} />
-              <span>{user?.name || "Account"}</span>
-              <ChevronDown size={14} />
             </summary>
             <div>
               {user && (
                 <>
-                  <small>{user.email}</small>
-                  <Link to="/account/settings">Account settings</Link>
+                  <section className="account-card">
+                    <AccountAvatar
+                      key={user.avatar_url}
+                      url={user.avatar_url}
+                    />
+                    <div>
+                      <strong>{user.name}</strong>
+                      <small>{user.email}</small>
+                    </div>
+                  </section>
+                  <Link to="/account/settings">
+                    <Settings size={17} /> Account settings
+                  </Link>
                 </>
               )}
               <Link to={owner ? "/explore" : "/owner"}>
@@ -162,7 +177,7 @@ export function MarketShell({ user, logout, children }) {
                     nav("/");
                   }}
                 >
-                  Sign out
+                  <LogOut size={17} /> Sign out
                 </button>
               ) : (
                 <Link to={"/login?next=" + encodeURIComponent(loc.pathname)}>
@@ -398,10 +413,16 @@ export function Catalog({ store, products, onAdd, cartItems = [], children }) {
                   <small>{p.category}</small>
                   <h2>{p.name}</h2>
                   <p>{p.description}</p>
-                  <strong>{amount(p.price)}</strong>
-                  <small>
-                    {p.quantity ? p.quantity + " available" : "Out of stock"}
-                  </small>
+                  <div className="product-price">
+                    <strong>{amount(p.price)}</strong>
+                    <small
+                      className={
+                        p.quantity ? "stock-available" : "stock-unavailable"
+                      }
+                    >
+                      {p.quantity ? p.quantity + " available" : "Out of stock"}
+                    </small>
+                  </div>
                   {onAdd && (
                     <button
                       disabled={
@@ -541,9 +562,13 @@ export function Storefront({ user, cartSlug }) {
         {notice}
       </p>
       {!own.length ? (
-        <p className="cart-empty">
-          <ShoppingBag size={24} /> Add a product to start your order.
-        </p>
+        <div className="cart-empty">
+          <span className="cart-empty-icon">
+            <ShoppingBag size={24} />
+          </span>
+          <strong>Your bag is empty</strong>
+          <p>Add a product to start your order.</p>
+        </div>
       ) : (
         <>
           <div className="cart-items">
@@ -551,9 +576,12 @@ export function Storefront({ user, cartSlug }) {
               const p = products.find((p) => p.id === i.id);
               return (
                 <div className="market-row" key={i.id}>
-                  {cartSlug && <Photo src={p?.photo} name="" />}
+                  <Photo src={p?.photo} name="" />
                   <div>
                     <b>{i.name}</b>
+                    <strong className="cart-line-total">
+                      {amount(Number(i.price) * i.quantity)}
+                    </strong>
                     <small>
                       {amount(i.price)} each ·{" "}
                       {p ? p.quantity + " available" : "Unavailable"}
@@ -621,8 +649,19 @@ export function Storefront({ user, cartSlug }) {
             })}
           </div>
           <div className="cart-summary">
-            <h3>Total · {total}</h3>
-            <p>Pay at pickup · {q.data.store.pickup}</p>
+            <h3>Order summary</h3>
+            <div className="cart-subtotal">
+              <span>Subtotal</span>
+              <strong>{total}</strong>
+            </div>
+            <div className="cart-location">
+              <MapPin size={17} />
+              <p>
+                <strong>Pay at pickup</strong>
+                <br />
+                {q.data.store.pickup}
+              </p>
+            </div>
             {review && (
               <p role="status">
                 Review the price and available stock for the items above.
@@ -640,12 +679,14 @@ export function Storefront({ user, cartSlug }) {
                 ? user
                   ? "Continue to checkout"
                   : "Sign in to check out"
-                : "Review cart"}
+                : "Review cart"}{" "}
+              <ChevronRight size={17} />
             </button>
           </div>
           {checkoutOpen && (
             <Modal
               title="Checkout"
+              className="market-checkout"
               close={() => setCheckoutOpen(false)}
               busy={busy}
             >
@@ -777,6 +818,23 @@ export function OrderDetail({ order, owner, close }) {
     q = useMarket(path + order.id),
     o = q.data?.order,
     { act, busy, message } = useAction();
+  const orderItems = o && (
+    <>
+      <Table
+        heads={["Item", "Quantity", "Price", "Total"]}
+        rows={o.items.map((i, k) => ({
+          key: k,
+          cells: [
+            i.product_name,
+            i.quantity,
+            amount(i.unit_price),
+            amount(i.line_total),
+          ],
+        }))}
+      />
+      <h3>Total · {amount(o.total_amount)}</h3>
+    </>
+  );
   return (
     <Modal title={"Order #" + order.id} close={close} busy={busy}>
       <State query={q}>
@@ -812,19 +870,7 @@ export function OrderDetail({ order, owner, close }) {
                 </p>
               </section>
             )}
-            <Table
-              heads={["Item", "Quantity", "Price", "Total"]}
-              rows={o.items.map((i, k) => ({
-                key: k,
-                cells: [
-                  i.product_name,
-                  i.quantity,
-                  amount(i.unit_price),
-                  amount(i.line_total),
-                ],
-              }))}
-            />
-            <h3>Total · {amount(o.total_amount)}</h3>
+            {owner && orderItems}
             {owner ? (
               ["placed", "processing"].includes(o.status) && (
                 <button
@@ -852,7 +898,11 @@ export function OrderDetail({ order, owner, close }) {
                 </button>
               )
             ) : (
-              <Receipt orderId={o.id} />
+              <Receipt
+                orderId={o.id}
+                storeName={order.store_name}
+                preview={orderItems}
+              />
             )}
             <p role="status">{message}</p>
           </>

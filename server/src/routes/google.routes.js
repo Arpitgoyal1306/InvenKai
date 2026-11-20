@@ -49,6 +49,7 @@ router.get("/", (req, res) => {
   res.redirect(
     res.locals.google.generateAuthUrl({
       scope: ["openid", "email", "profile"],
+      prompt: "select_account",
       state,
       nonce,
       code_challenge: challenge,
@@ -71,11 +72,9 @@ router.post("/callback", async (req, res) => {
       .json({ message: "Google sign-in expired. Please try again." });
   }
   if (state !== flow.state || typeof code !== "string" || !code) {
-    return res
-      .status(400)
-      .json({
-        message: "Google sign-in could not be confirmed. Please try again.",
-      });
+    return res.status(400).json({
+      message: "Google sign-in could not be confirmed. Please try again.",
+    });
   }
   res.clearCookie(flowCookie, res.locals.cookie);
   const client = res.locals.google;

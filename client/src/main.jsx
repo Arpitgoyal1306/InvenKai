@@ -223,7 +223,7 @@ function Auth({ register, login, landing }) {
               </form>
               <a
                 className="google-sign-in"
-                href={base + "/auth/google"}
+                href={(import.meta.env.PROD ? "/api" : base) + "/auth/google"}
                 onClick={() => {
                   sessionStorage.setItem(
                     "invenkai.google.next",
@@ -250,7 +250,10 @@ function GoogleCallback({ login }) {
     const code = params.get("code");
     const state = params.get("state");
     if (!code || !state) {
-      setError("Google sign-in was canceled or could not be completed.");
+      navigate(
+        "/login" + (sessionStorage.getItem("invenkai.google.next") || ""),
+        { replace: true },
+      );
       return;
     }
     const controller = new AbortController();
@@ -259,23 +262,21 @@ function GoogleCallback({ login }) {
       body: { code, state },
       publicRoute: true,
       credentials: "include",
+      sameOrigin: import.meta.env.PROD,
       signal: controller.signal,
     })
       .then((result) => {
-        const next = new URLSearchParams(
-          sessionStorage.getItem("invenkai.google.next") || "",
-        ).get("next");
+        const next = sessionStorage.getItem("invenkai.google.next") || "";
         sessionStorage.removeItem("invenkai.google.next");
         login(result);
-        navigate(next ? "/login?next=" + encodeURIComponent(next) : "/login", {
-          replace: true,
-        });
+        navigate("/login" + next, { replace: true });
       })
       .catch((error) => {
         if (!controller.signal.aborted) setError(error.message);
       });
     return () => controller.abort();
   }, [search, navigate, login]);
+
   return (
     <main className="session-state">
       <Brand />

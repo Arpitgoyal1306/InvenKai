@@ -1078,3 +1078,286 @@
   border-radius: 50%;
   object-fit: cover;
 }
+
+/* Marketplace navigation and shopping surfaces */
+.market {
+  background: #f8f7f2;
+}
+.market .market-head {
+  background: #fcfcf7;
+  color: #18392f;
+  border-bottom: 1px solid #dde4d9;
+  box-shadow: 0 3px 12px #18392f08;
+}
+.brand-market .brand-mark {
+  background: linear-gradient(145deg, #ffdcc3, #f2a36e);
+  color: #254a40;
+  box-shadow: inset 0 0 0 1px #9e57362c;
+}
+.market-head nav a {
+  color: #405e52;
+}
+.market-head nav a:hover,
+.market-head nav a.active {
+  background: #eaf0e7;
+  color: #214836;
+}
+.market .header-cart,
+.market .account summary {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid #ccd9cd;
+  background: #f2f5ed;
+}
+.market .header-cart:hover,
+.market .account summary:hover {
+  background: #e3eddf;
+}
+.market .account-avatar {
+  width: 34px;
+  height: 34px;
+}
+.header-cart span {
+  position: absolute;
+  right: -4px;
+  top: -5px;
+  padding: 1px 5px;
+  border-radius: 20px;
+  background: #234637;
+  color: #fff;
+  font-size: 0.73rem;
+  font-weight: 750;
+}
+.market .account > div {
+  min-width: min(265px, 88vw);
+  gap: 7px;
+  padding: 12px;
+}
+.account-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  margin-bottom: 3px;
+  background: #eff4eb;
+  border-radius: 9px;
+}
+.market .account > div > a,
+.market .account > div > button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 7px;
+  text-decoration: none;
+}
+.market .account > div > a:hover,
+.market .account > div > button:hover {
+  background: #edf3e9;
+}
+.directory-hero {
+  border-radius: 22px;
+}
+.store-directory .market-card > div:last-child {
+  padding: 20px 22px;
+}
+.store-directory .market-card .market-photo {
+  aspect-ratio: 1.65;
+}
+.product-grid .market-card {
+  border-radius: 18px;
+}
+.product-grid .market-card > div:last-child {
+  gap: 12px;
+}
+.product-grid .market-card button {
+  width: 100%;
+  min-height: 43px;
+}
+.product-price {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  margin-top: auto;
+}
+.product-price small {
+  padding: 4px 8px;
+  border-radius: 7px;
+  font-weight: 700;
+}
+.product-price .stock-available {
+  background: #eaf3e8;
+  color: #28523c;
+}
+.product-price .stock-unavailable {
+  background: #f2ece5;
+  color: #725842;
+}
+
+.cart-empty {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: 7px;
+  padding: 25px 8px;
+}
+.cart-empty-icon,
+.invoice-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #e7efe3;
+  color: #2a5944;
+}
+.cart-panel .market-row small {
+  color: #51675e;
+}
+.cart-panel .market-row > img,
+.cart-panel .market-row > .market-placeholder {
+  height: 53px;
+  width: 57px;
+  border-radius: 9px;
+  object-fit: cover;
+}
+.cart-panel .market-row {
+  display: grid;
+  grid-template-columns: 57px minmax(0, 1fr);
+  column-gap: 12px;
+}
+.cart-panel .cart-controls {
+  grid-column: 2;
+  flex-wrap: wrap;
+}
+.cart-panel .cart-line-total {
+  display: block;
+  margin-top: 4px;
+  color: #244c3a;
+}
+.cart-summary h3 {
+  color: #18392f;
+}
+.cart-subtotal {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 0;
+  border-block: 1px solid #dce5d8;
+}
+.cart-location {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 13px 0;
+  color: #405c50;
+  font-size: 0.9rem;
+}
+.cart-location svg {
+  flex: none;
+  margin-top: 3px;
+}
+.cart-continue {
+  justify-content: space-between;
+  padding-inline: 15px;
+}
+.market-checkout {
+  width: min(680px, 95vw);
+  max-width: unset;
+}
+.market-checkout .checkout-fields {
+  gap: 15px 19px;
+}
+.market-checkout .checkout-fields input {
+  min-height: 45px;
+}
+.market-checkout .checkout-form > button {
+  width: 100%;
+}
+.market-checkout .checkout-total {
+  font-size: 1.1rem;
+}
+
+.invoice {
+  padding: clamp(13px, 3vw, 22px);
+  border: 1px solid #d6e2d5;
+  border-radius: 13px;
+  background: #fcfdf9;
+}
+.invoice-header {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.invoice-header .invoice-icon {
+  flex: none;
+}
+.invoice-header h3 {
+  margin: 0 0 4px;
+}
+.invoice-header p {
+  color: #4b6257;
+  font-size: 0.9rem;
+}
+.invoice-reference {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 25px;
+  margin: 14px 0;
+  padding-inline: 4px;
+}
+.invoice-reference dd {
+  margin-bottom: 0;
+}
+.invoice .table-wrap {
+  max-width: 100%;
+}
+.invoice table {
+  width: 100%;
+  min-width: 0;
+}
+.invoice :is(th, td) {
+  white-space: normal;
+  padding: 9px 5px;
+}
+.invoice :is(td, th):not(:first-child) {
+  text-align: right;
+}
+.invoice-total {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 15px 0;
+  font-size: 1.1rem;
+}
+.invoice > p[role="status"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+@media (max-width: 560px) {
+  .market-head nav a {
+    gap: 5px;
+  }
+  .market .market-head-actions {
+    gap: 8px;
+  }
+  .market-checkout .checkout-fields {
+    gap: 12px;
+  }
+  .market-checkout {
+    padding-inline: 16px;
+  }
+  .market-checkout .modal-heading {
+    margin-inline: -16px !important;
+    padding-inline: 16px !important;
+  }
+}

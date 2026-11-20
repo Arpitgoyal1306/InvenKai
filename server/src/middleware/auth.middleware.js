@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
+const pool = require("../config/database");
 
-const authenticateToken = (req, res, next) => {
+const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -17,17 +18,34 @@ const authenticateToken = (req, res, next) => {
     });
   }
 
+  let decoded;
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
+  } catch {
+    return res.status(401).json({ message: "Invalid or expired token" });
+  }
+  if (typeof decoded !== "object" || !decoded.sub || typeof decoded.role !== "string") {
+    return res.status(401).json({ message: "Invalid or expired token" });
+  }
 
+  try {
+    // Converting a legacy account to Google-only also invalidates old password sessions.
     if (
-      typeof decoded !== "object" ||
-      !decoded.sub ||
-      typeof decoded.role !== "string"
+      decoded.role === "customer" &&
+      decoded.authProvider !== "google" &&
+      /^[1-9]\d{0,18}$/.test(decoded.sub) &&
+      BigInt(decoded.sub) <= 9223372036854775807n
     ) {
-      return res.status(401).json({
-        message: "Invalid or expired token",
-      });
+      const {
+        rows: [account],
+      } = await pool.query(
+        "SELECT 1 FROM users WHERE id=$1 AND google_subject IS NOT NULL AND password_hash IS NULL",
+        [decoded.sub],
+      );
+      if (account)
+        return res
+          .status(401)
+          .json({ message: "Sign in with Google to continue." });
     }
 
     req.user = {
@@ -37,9 +55,7 @@ const authenticateToken = (req, res, next) => {
 
     return next();
   } catch (error) {
-    return res.status(401).json({
-      message: "Invalid or expired token",
-    });
+    return next(error);
   }
 };
 

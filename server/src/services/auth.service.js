@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const pool = require("../config/database");
 const bcrypt = require("bcrypt");
+const { validPhone } = require("../utils/contact");
 
 const MAX_EMAIL_LENGTH = 254;
 
@@ -123,7 +124,7 @@ async function loginUser({ email, password }) {
   return createLoginSession(user);
 }
 
-function createLoginSession(user) {
+function createLoginSession(user, google = false) {
   if (!process.env.JWT_SECRET) {
     throw new Error("JWT_SECRET is not configured");
   }
@@ -132,6 +133,7 @@ function createLoginSession(user) {
     {
       sub: String(user.id),
       role: user.role,
+      ...(google && { authProvider: "google" }),
     },
     process.env.JWT_SECRET,
     { expiresIn: "1h" },
@@ -176,21 +178,29 @@ function googleAvatar(picture) {
   return null;
 }
 
-async function loginWithGoogle({ sub, name, email, email_verified, picture }) {
+async function loginWithGoogle({
+  sub,
+  name,
+  email,
+  email_verified,
+  hd,
+  picture,
+}) {
   if (
     typeof sub !== "string" ||
     !sub ||
-    !email_verified ||
+    email_verified !== true ||
     !isValidEmail(email)
   ) {
     throw profileError("Choose a Google account with a verified email.", 400);
   }
+  const normalizedEmail = email.trim().toLowerCase();
   const avatar = googleAvatar(picture);
   const existing = await pool.query(
     "UPDATE users SET avatar_url=COALESCE($2,avatar_url) WHERE google_subject=$1 RETURNING id,name,email,role,avatar_url",
     [sub, avatar],
   );
-  if (existing.rowCount) return createLoginSession(existing.rows[0]);
+  if (existing.rowCount) return createLoginSession(existing.rows[0], true);
   try {
     const {
       rows: [user],
@@ -203,20 +213,49 @@ async function loginWithGoogle({ sub, name, email, email_verified, picture }) {
           0,
           100,
         ),
-        email.trim().toLowerCase(),
+        normalizedEmail,
         sub,
         avatar,
       ],
     );
-    return createLoginSession(user);
+    return createLoginSession(user, true);
   } catch (error) {
-    if (error.code === "23505" && error.constraint === "users_email_key") {
+    if (error.code !== "23505" || error.constraint !== "users_email_key")
+      throw error;
+    const googleOwnsEmail =
+      normalizedEmail.endsWith("@gmail.com") ||
+      (typeof hd === "string" && Boolean(hd.trim()));
+    if (!googleOwnsEmail) {
       throw profileError(
-        "An InvenKai account already uses this email. Sign in with its password.",
+        "Sign in with your InvenKai password. Google cannot confirm ownership of this existing email.",
         409,
       );
     }
-    throw error;
+
+    // A legacy password registration does not verify the email. Replace that
+    // credential so the Google owner does not inherit a password someone else chose.
+    const {
+      rows: [linked],
+    } = await pool.query(
+      `UPDATE users SET google_subject=$2, avatar_url=COALESCE($3,avatar_url),
+          password_hash=NULL, updated_at=NOW()
+       WHERE email=$1 AND role='customer' AND google_subject IS NULL
+       RETURNING id,name,email,role,avatar_url`,
+      [normalizedEmail, sub, avatar],
+    );
+    if (linked) return createLoginSession(linked, true);
+
+    const {
+      rows: [alreadyLinked],
+    } = await pool.query(
+      "SELECT id,name,email,role,avatar_url FROM users WHERE google_subject=$1",
+      [sub],
+    );
+    if (alreadyLinked) return createLoginSession(alreadyLinked, true);
+    throw profileError(
+      "This account cannot be linked automatically. Sign in with its original method.",
+      409,
+    );
   }
 }
 const addressFields = {
@@ -253,10 +292,7 @@ async function updateProfile(id, input) {
     throw profileError("Enter a valid email address.", 400);
   if (
     typeof phone !== "string" ||
-    (phone.trim() &&
-      (phone.trim().length > 28 ||
-        !/^[+()0-9 .-]+$/.test(phone.trim()) ||
-        !/^\d{7,15}$/.test(phone.replace(/\D/g, ""))))
+    (phone.trim() && !validPhone(phone.trim()))
   ) {
     throw profileError("Enter a valid phone number.", 400);
   }

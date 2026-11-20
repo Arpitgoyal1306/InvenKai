@@ -8,7 +8,7 @@ const pool = require("../src/config/database");
 function bearer(role, id = "1") {
   return (
     "Bearer " +
-    jwt.sign({ sub: id, role }, process.env.JWT_SECRET, { expiresIn: "5m" })
+    jwt.sign({ sub: id, role, authProvider: "google" }, process.env.JWT_SECRET, { expiresIn: "5m" })
   );
 }
 

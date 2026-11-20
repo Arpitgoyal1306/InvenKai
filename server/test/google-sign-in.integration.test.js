@@ -13,6 +13,8 @@ test("Google callback checks state and signs in only the verified Google identit
   await pool.verifyDatabaseIdentity();
   const suffix = randomUUID();
   const email = suffix + "@example.test";
+  const legacyEmail = "legacy-" + email;
+  const password = "test-password-for-google-link";
   const profile = {
     sub: suffix,
     email,
@@ -78,8 +80,45 @@ test("Google callback checks state and signs in only the verified Google identit
       .set("Authorization", "Bearer " + second.token)
       .expect(200);
     assert.equal(restored.body.user.avatar_url, profile.picture);
+
+    const credentials = {
+      name: "Existing Buyer",
+      email: legacyEmail,
+      password,
+    };
+    const registered = await request(app)
+      .post("/api/auth/register")
+      .send(credentials)
+      .expect(201);
+    profile.sub = suffix + "-legacy";
+    profile.email = legacyEmail;
+    const oldPasswordLogin = (
+      await request(app).post("/api/auth/login").send(credentials).expect(200)
+    ).body;
+    const legacy = await start();
+    await callback(legacy.cookie, legacy.state).expect(409);
+    profile.hd = "example.test";
+    const workspace = await start();
+    const linked = (
+      await callback(workspace.cookie, workspace.state).expect(200)
+    ).body;
+    assert.equal(linked.user.id, registered.body.user.id);
+    assert.equal(linked.user.name, credentials.name);
+    assert.equal(linked.user.avatar_url, profile.picture);
+    await request(app).post("/api/auth/login").send(credentials).expect(401);
+    await request(app)
+      .get("/api/auth/profile")
+      .set("Authorization", "Bearer " + oldPasswordLogin.token)
+      .expect(401);
+    const linkedGoogle = await start();
+    const googleLogin = (
+      await callback(linkedGoogle.cookie, linkedGoogle.state).expect(200)
+    ).body;
+    assert.equal(googleLogin.user.id, linked.user.id);
   } finally {
-    await pool.query("DELETE FROM users WHERE google_subject=$1", [suffix]);
+    await pool.query("DELETE FROM users WHERE email=ANY($1)", [
+      [email, legacyEmail],
+    ]);
     for (const [key, value] of oldConfig) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

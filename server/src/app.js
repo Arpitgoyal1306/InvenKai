@@ -5,6 +5,7 @@ const { isIP } = require("node:net");
 const cors = require("cors");
 const express = require("express");
 const pool = require("./config/database");
+const redis = require("./config/redis");
 
 const authRoutes = require("./routes/auth.routes");
 const inventoryRoutes = require("./routes/inventory.routes");
@@ -44,7 +45,7 @@ if (process.env.NODE_ENV === "production" && existsSync(clientIndex)) {
   app.use(express.static(clientDirectory, { index: false }));
   // Serve deep links for the browser while keeping API and missing asset errors as JSON.
   app.get(/.*/, (req, res, next) => {
-    if (/^\/(?:api|health|ws)(?:\/|$)/.test(req.path) || path.extname(req.path) ||
+    if (["api","health","ready","ws"].includes(req.path.split("/")[1]) || path.extname(req.path) ||
         !req.get("accept")?.includes("text/html")) return next();
     res.set("Cache-Control", "no-cache").sendFile(clientIndex);
   });
@@ -70,6 +71,21 @@ app.get("/health", async (req, res) => {
       database: "disconnected",
     });
   }
+});
+
+app.get("/ready", async (req, res) => {
+  let database = false;
+  try {
+    await pool.query("SELECT 1");
+    database = true;
+  } catch {
+    // The readiness response identifies the unavailable dependency.
+  }
+  const cache = redis.isRedisReady();
+  res.status(database && cache ? 200 : 503).json({
+    database: database ? "connected" : "unavailable",
+    redis: cache ? "connected" : "unavailable",
+  });
 });
 
 // Handle unknown routes

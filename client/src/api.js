@@ -9,12 +9,19 @@ export const tokenKey = "invenkai.session";
 
 export async function api(
   path,
-  { method = "GET", body, signal, publicRoute = false, credentials } = {},
+  {
+    method = "GET",
+    body,
+    signal,
+    publicRoute = false,
+    credentials,
+    sameOrigin = false,
+  } = {},
 ) {
   const token = publicRoute ? null : sessionStorage.getItem(tokenKey);
   let response;
   try {
-    response = await fetch(base + path, {
+    response = await fetch((sameOrigin ? "/api" : base) + path, {
       method,
       signal,
       credentials,

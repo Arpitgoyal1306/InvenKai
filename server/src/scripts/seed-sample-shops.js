@@ -1,4 +1,4 @@
-// Explicit local demo data. Existing stores, catalog edits and stock are preserved on reruns.
+// Explicit demo data. Existing stores, catalog edits and stock are preserved on reruns.
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomBytes } = require("node:crypto");
@@ -84,8 +84,13 @@ function photo(name) {
   );
 }
 async function seed() {
-  if (process.env.NODE_ENV === "production")
-    throw new Error("Use a local demo database.");
+  if (
+    process.env.NODE_ENV === "production" &&
+    !process.argv.includes("--allow-production")
+  )
+    throw new Error(
+      "Pass --allow-production to publish sample stores to the configured production database.",
+    );
   const client = await pool.connect();
   try {
     await client.query("BEGIN");

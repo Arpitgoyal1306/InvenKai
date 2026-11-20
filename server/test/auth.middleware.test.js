@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 const authenticateToken = require("../src/middleware/auth.middleware");
+const pool = require("../src/config/database");
 
 const originalSecret = process.env.JWT_SECRET;
 
@@ -100,7 +101,8 @@ test("rejects an expired token", () => {
   assert.equal(nextCalled, false);
 });
 
-test("accepts a valid token and attaches the user to the request", () => {
+test("accepts a valid token and attaches the user to the request", async (t) => {
+  t.mock.method(pool, "query", async () => ({ rows: [] }));
   const token = jwt.sign(
     { role: "customer" },
     process.env.JWT_SECRET,
@@ -131,7 +133,7 @@ test("accepts a valid token and attaches the user to the request", () => {
 
   let nextCalled = false;
 
-  authenticateToken(req, res, () => {
+  await authenticateToken(req, res, () => {
     nextCalled = true;
   });
 
