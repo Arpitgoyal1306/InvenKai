@@ -13,6 +13,9 @@ const {
 const { createOrderQueue } = require("../queues/order.queue");
 const redis = require("../config/redis");
 const {
+  createOrderReceiptProcessor,
+} = require("../workers/order-receipt.processor");
+const {
   listFailedOrderReceipts,
   retryFailedOrderReceipt,
 } = require("../scripts/retry-failed-order-receipts");
@@ -134,18 +137,32 @@ router.delete(
   },
 );
 
-router.get("/orders/:id/receipt", authenticate, async (req, res) => {
-  validateProductId(req.params.id);
+const issueReceipt = createOrderReceiptProcessor();
+async function findBuyerReceipt(orderId, buyerId) {
   const { rows } = await pool.query(
     `SELECT r.receipt_number, r.issued_at, r.total_amount, r.items
      FROM orders o LEFT JOIN receipts r ON r.order_id=o.id
      WHERE o.id=$1 AND o.user_id=$2`,
-    [req.params.id, req.user.id],
+    [orderId, buyerId],
   );
-  if (!rows.length)
-    return res.status(404).json({ message: "Order not found." });
-  return res.json({ receipt: rows[0].receipt_number ? rows[0] : null });
-});
+  return rows[0];
+}
+async function buyerReceipt(req, res) {
+  const orderId = req.params.id;
+  validateProductId(orderId);
+  let receipt = await findBuyerReceipt(orderId, req.user.id);
+  if (!receipt) return res.status(404).json({ message: "Order not found." });
+
+  if (req.method === "POST" && !receipt.receipt_number) {
+    await issueReceipt({ data: { orderId } });
+    receipt = await findBuyerReceipt(orderId, req.user.id);
+  }
+  return res.json({ receipt: receipt?.receipt_number ? receipt : null });
+}
+router
+  .route("/orders/:id/receipt")
+  .get(authenticate, buyerReceipt)
+  .post(authenticate, buyerReceipt);
 
 async function withReceiptQueue(action) {
   if (!redis.isRedisReady())

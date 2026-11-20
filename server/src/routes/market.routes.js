@@ -123,7 +123,7 @@ async function catalog(storeId, query, { owner = false, client = db } = {}) {
     `SELECT p.id,p.name,p.description,p.photo,p.price,c.name AS category,i.quantity
       ${owner ? ",p.archived,p.low_stock_threshold" : ""}
       FROM products p JOIN inventory i ON i.product_id=p.id JOIN categories c ON c.id=p.category_id
-      WHERE p.store_id=$1 AND ($2 OR NOT p.archived)
+      WHERE p.store_id=$1 AND p.deleted_at IS NULL AND ($2 OR NOT p.archived)
         AND strpos(lower(p.name), lower($3)) > 0 AND ($4 = '' OR c.name = $4)
         AND (NOT $5 OR (${catalogStock}))
       ORDER BY p.id DESC`,
@@ -132,7 +132,7 @@ async function catalog(storeId, query, { owner = false, client = db } = {}) {
   );
   const categories = await client.query(
     `SELECT DISTINCT c.name FROM products p JOIN categories c ON c.id=p.category_id
-      WHERE p.store_id=$1 AND ($2 OR NOT p.archived) ORDER BY c.name`,
+      WHERE p.store_id=$1 AND p.deleted_at IS NULL AND ($2 OR NOT p.archived) ORDER BY c.name`,
     [storeId, showArchived],
   );
   return {
@@ -283,7 +283,7 @@ router.get("/owner/categories", async (req, res) => {
     `SELECT category FROM stores WHERE owner_id=$1
      UNION
      SELECT c.name FROM stores s JOIN products p ON p.store_id=s.id
-       JOIN categories c ON c.id=p.category_id WHERE s.owner_id=$1
+       JOIN categories c ON c.id=p.category_id WHERE s.owner_id=$1 AND p.deleted_at IS NULL
      ORDER BY 1`,
     [req.user.id],
   );
@@ -352,7 +352,7 @@ async function saveProduct(req, res) {
     name = text(b.name, 200),
     desc = text(b.description, 1500, false),
     cat = text(b.category, 100),
-    photo = image(b.photo);
+    photo = req.params.id && b.photo === undefined ? null : image(b.photo);
   if (
     typeof b.price !== "number" ||
     !Number.isFinite(b.price) ||
@@ -365,11 +365,15 @@ async function saveProduct(req, res) {
     b.low_stock_threshold == null ? null : integer(b.low_stock_threshold);
   const id = await transaction(async (c) => {
     let category = (
-      await c.query(
-        "INSERT INTO categories(name) VALUES($1) ON CONFLICT(name) DO NOTHING RETURNING id",
-        [cat],
-      )
+      await c.query("SELECT id FROM categories WHERE name=$1", [cat])
     ).rows[0];
+    if (!category)
+      category = (
+        await c.query(
+          "INSERT INTO categories(name) VALUES($1) ON CONFLICT(name) DO NOTHING RETURNING id",
+          [cat],
+        )
+      ).rows[0];
     if (!category)
       category = (
         await c.query("SELECT id FROM categories WHERE name=$1", [cat])
@@ -385,8 +389,8 @@ async function saveProduct(req, res) {
     ];
     if (req.params.id) {
       const result = await c.query(
-        `UPDATE products SET name=$1,description=$2,price=$3,photo=$4,category_id=$5,low_stock_threshold=$6,updated_at=NOW()
-        WHERE store_id=$7 AND id=$8 RETURNING id`,
+        `UPDATE products SET name=$1,description=$2,price=$3,photo=COALESCE($4,photo),category_id=$5,low_stock_threshold=$6,updated_at=NOW()
+        WHERE store_id=$7 AND id=$8 AND deleted_at IS NULL RETURNING id`,
         [...common, req.params.id],
       );
       if (!result.rowCount) fail("Product not found.", 404);
@@ -418,10 +422,19 @@ router.patch("/owner/products/:id/visibility", async (req, res) => {
   if (typeof req.body?.archived !== "boolean")
     fail("Choose a product visibility.");
   const r = await db.query(
-    "UPDATE products SET archived=$3 WHERE id=$1 AND store_id=$2",
+    "UPDATE products SET archived=$3 WHERE id=$1 AND store_id=$2 AND deleted_at IS NULL",
     [req.params.id, req.store.id, req.body.archived],
   );
   if (!r.rowCount) fail("Product not found.", 404);
+  res.sendStatus(204);
+});
+router.delete("/owner/products/:id", async (req, res) => {
+  const result = await db.query(
+    `UPDATE products SET archived=true,deleted_at=NOW(),updated_at=NOW()
+     WHERE id=$1 AND store_id=$2 AND deleted_at IS NULL`,
+    [req.params.id, req.store.id],
+  );
+  if (!result.rowCount) fail("Product not found.", 404);
   res.sendStatus(204);
 });
 router.post("/owner/products/:id/stock", async (req, res) => {
@@ -430,7 +443,7 @@ router.post("/owner/products/:id/stock", async (req, res) => {
   if (typeof req.body.delta !== "number") fail("Invalid adjustment.");
   await transaction(async (c) => {
     const r = await c.query(
-      "SELECT i.quantity FROM inventory i JOIN products p ON p.id=i.product_id WHERE p.id=$1 AND p.store_id=$2 FOR UPDATE OF p,i",
+      "SELECT i.quantity FROM inventory i JOIN products p ON p.id=i.product_id WHERE p.id=$1 AND p.store_id=$2 AND p.deleted_at IS NULL FOR UPDATE OF p,i",
       [req.params.id, req.store.id],
     );
     if (!r.rowCount) fail("Product not found.", 404);

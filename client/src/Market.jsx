@@ -26,6 +26,7 @@ import {
   Settings,
   LogOut,
   ChevronRight,
+  ChevronDown,
   Compass,
   ReceiptText,
   Minus,
@@ -88,7 +89,7 @@ export function MarketPager({ listing }) {
   ) : null;
 }
 
-export function useAction() {
+export function useAction(refreshCatalog = false) {
   const client = useQueryClient(),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
@@ -97,12 +98,21 @@ export function useAction() {
     setMessage("");
     try {
       await fn();
-      await client.invalidateQueries();
+      if (refreshCatalog) {
+        void client.invalidateQueries({
+          predicate: ({ queryKey: [path] }) =>
+            typeof path === "string" &&
+            (path.startsWith("/market/owner") ||
+              path.startsWith("/market/stores")),
+        });
+      } else {
+        await client.invalidateQueries();
+      }
       setMessage(success || "");
       return true;
     } catch (e) {
       setMessage(e.message);
-      await client.invalidateQueries();
+      if (!refreshCatalog) await client.invalidateQueries();
       return false;
     } finally {
       setBusy(false);
@@ -319,11 +329,13 @@ export function MarketShell({ user, logout, children }) {
     </MarketLive.Provider>
   );
 }
-export function Photo({ src, name, store = false }) {
-  return src ? (
+export function Photo({ src, name, store = false, eager = false }) {
+  const [failed, setFailed] = useState(null);
+  return src && src !== failed ? (
     <img
-      loading="lazy"
+      loading={eager ? "eager" : "lazy"}
       decoding="async"
+      onError={() => setFailed(src)}
       className="market-photo"
       src={src}
       alt={name}
@@ -359,16 +371,19 @@ export function Filters({
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
-      <select
-        aria-label="Category"
-        value={category}
-        onChange={(e) => setCategory(e.target.value)}
-      >
-        <option value="">All categories</option>
-        {categories.map((x) => (
-          <option key={x}>{x}</option>
-        ))}
-      </select>
+      <div className="market-category-select">
+        <select
+          aria-label="Category"
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+        >
+          <option value="">All categories</option>
+          {categories.map((x) => (
+            <option key={x}>{x}</option>
+          ))}
+        </select>
+        <ChevronDown size={16} aria-hidden="true" />
+      </div>
       {(search || category) && (
         <button
           onClick={() => {
@@ -616,6 +631,7 @@ export function Storefront({ user, cartSlug }) {
     [notice, N] = useState(""),
     [checkoutOpen, setCheckoutOpen] = useState(false),
     { act, busy, message, setMessage } = useAction();
+  const client = useQueryClient();
   const checkoutRequest = useRef(null);
   const { hash } = useLocation();
   const loaded = Boolean(q.data);
@@ -659,6 +675,7 @@ export function Storefront({ user, cartSlug }) {
       N("All available units are already in your cart.");
       return;
     }
+    client.setQueryData(["cart-product", slug, p.id], p);
     save(
       existing
         ? own.map((i) =>
@@ -739,9 +756,12 @@ export function Storefront({ user, cartSlug }) {
           <div className="cart-items">
             {own.map((i) => {
               const p = products.find((p) => p.id === i.id);
+              const preview =
+                client.getQueryData(["cart-product", slug, i.id]) ||
+                q.data.products.find((p) => p.id === i.id);
               return (
                 <div className="market-row" key={i.id}>
-                  <Photo src={p?.photo} name="" />
+                  <Photo src={p?.photo || preview?.photo} name="" eager />
                   <div>
                     <b>{i.name}</b>
                     <strong className="cart-line-total">
@@ -749,7 +769,13 @@ export function Storefront({ user, cartSlug }) {
                     </strong>
                     <small>
                       {amount(i.price)} each ·{" "}
-                      {p ? p.quantity + " available" : "Unavailable"}
+                      {p
+                        ? p.quantity + " available"
+                        : cartQuote.isPending
+                          ? "Checking stock…"
+                          : cartQuote.isError
+                            ? "Stock check unavailable"
+                            : "Unavailable"}
                     </small>
                     {p && Number(p.price) !== Number(i.price) && (
                       <button

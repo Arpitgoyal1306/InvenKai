@@ -67,7 +67,7 @@ For local development, set up `server/.env` from `server/.env.example`. From the
 
 The Render Blueprint uses the Node runtime with `server` as the root directory, `npm install` as the build command, and `npm run start` as the start command. Enter the production values in Render, including the internal Redis URL and the public client origin. Deploy the React app separately and set its `VITE_API_URL` to the bare Render backend URL. Use the [production migration workflow](#production-database-migrations) for a release that changes the schema.
 
-Use the same PostgreSQL and Redis URLs for the web service, receipt dispatcher, and receipt worker. Check `/ready` for PostgreSQL and Redis connectivity. A pending invoice becomes available after `npm run dispatcher:orders` queues it and `npm run worker:orders` processes it. The Vercel project uses `client/` as its root so the `/api` rewrite also keeps Google's OAuth cookie on the client origin.
+Use the same PostgreSQL and Redis URLs for the web service, receipt dispatcher, and receipt worker. Check `/ready` for PostgreSQL and Redis connectivity. The dispatcher and worker issue receipts in the background. A buyer who opens a pending receipt can also get it immediately through the API. The Vercel project uses `client/` as its root so the `/api` rewrite also keeps Google's OAuth cookie on the client origin.
 
 ### Deploy on one origin
 

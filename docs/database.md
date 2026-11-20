@@ -1,6 +1,6 @@
 # InvenKai database
 
-The 19 migrations in [server/migrations](../server/migrations) are the source of truth for the PostgreSQL schema. They cover users and Google accounts, products and categories, warehouse and seller inventory, suppliers, orders, the receipt outbox, and receipts. The [onboarding guide](../DEVELOPER_ONBOARDING.md#d-apply-database-migrations) explains how to apply them and how to verify the historical timezone before migrating populated legacy orders.
+The 20 migrations in [server/migrations](../server/migrations) are the source of truth for the PostgreSQL schema. They cover users and Google accounts, products and categories, warehouse and seller inventory, suppliers, orders, the receipt outbox, and receipts. The [onboarding guide](../DEVELOPER_ONBOARDING.md#d-apply-database-migrations) explains how to apply them and how to verify the historical timezone before migrating populated legacy orders.
 
 | Records | Relationships |
 |---|---|

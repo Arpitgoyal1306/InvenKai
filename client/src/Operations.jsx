@@ -84,9 +84,10 @@ export function Receipt({ orderId, storeName, preview }) {
   const path = "/orders/" + orderId + "/receipt";
   const q = useQuery({
     queryKey: [path],
-    queryFn: ({ signal }) => api(path, { signal }),
-    refetchInterval: (query) =>
-      query.state.data?.receipt || query.state.error ? false : 4000,
+    queryFn: async ({ signal }) => {
+      const result = await api(path, { signal });
+      return result.receipt ? result : api(path, { method: "POST", signal });
+    },
   });
   const receipt = q.data?.receipt;
   function download() {
@@ -166,8 +167,11 @@ export function Receipt({ orderId, storeName, preview }) {
             </>
           ) : (
             <p role="status">
-              <ReceiptText size={18} /> Preparing your receipt. It will appear
-              here automatically.
+              <ReceiptText size={18} /> Your receipt could not be loaded.{" "}
+              <button type="button" onClick={() => q.refetch()}>
+                Try again
+              </button>
+              .
             </p>
           )}
         </State>

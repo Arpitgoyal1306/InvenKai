@@ -1,4 +1,5 @@
 import React, { useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Link,
   Routes,
@@ -7,7 +8,16 @@ import {
   useNavigate,
   useSearchParams,
 } from "react-router-dom";
-import { Store, Package, ShoppingBag, TriangleAlert } from "lucide-react";
+import {
+  Store,
+  Package,
+  ShoppingBag,
+  TriangleAlert,
+  Minus,
+  Plus,
+  Trash2,
+  ChevronDown,
+} from "lucide-react";
 import { api, amount, dateTime, useData } from "./api";
 import { State, Table, Modal } from "./ui";
 import {
@@ -343,30 +353,49 @@ function Settings({ store }) {
     </>
   );
 }
+function updateOwnerCatalog(client, update) {
+  client.setQueriesData(
+    {
+      predicate: ({ queryKey: [path] }) =>
+        typeof path === "string" && path.startsWith(root + "/products?"),
+    },
+    (data) => data && { ...data, products: update(data.products) },
+  );
+}
+
 function ProductForm({ product, close }) {
+  const client = useQueryClient();
   const [photo, P] = useState(product?.photo || ""),
-    { act, message, busy } = useAction();
+    { act, message, busy } = useAction(true);
   async function submit(e) {
     e.preventDefault();
     const b = Object.fromEntries(new FormData(e.currentTarget));
     b.price = Number(b.price);
-    b.quantity = Number(b.quantity);
+    if (!product) b.quantity = Number(b.quantity);
     b.low_stock_threshold =
       b.low_stock_threshold === "" ? null : Number(b.low_stock_threshold);
-    b.photo = photo;
+    if (!product || photo !== (product.photo || "")) b.photo = photo;
     if (
-      await act(() =>
-        api(root + "/products" + (product ? "/" + product.id : ""), {
+      await act(async () => {
+        await api(root + "/products" + (product ? "/" + product.id : ""), {
           method: product ? "PUT" : "POST",
           body: b,
-        }),
-      )
+        });
+        if (product) {
+          updateOwnerCatalog(client, (products) =>
+            products.map((row) =>
+              row.id === product.id ? { ...row, ...b } : row,
+            ),
+          );
+        }
+      })
     )
       close(true);
   }
   return (
     <Modal
       title={product ? "Edit product" : "Add product"}
+      className="owner-catalog-dialog product-editor"
       close={() => close(false)}
       busy={busy}
     >
@@ -426,8 +455,19 @@ function ProductForm({ product, close }) {
             <small>Defaults to {defaultLowStock} units when blank.</small>
           </label>
           <Upload label="Product photo" value={photo} onChange={P} />
-          <button className="primary">Save product</button>
-          <p role="alert">{message}</p>
+          {message && (
+            <p className="owner-form-error" role="alert">
+              {message}
+            </p>
+          )}
+          <div className="owner-dialog-actions">
+            <button type="button" onClick={() => close(false)}>
+              Cancel
+            </button>
+            <button className="primary">
+              {busy ? "Saving product…" : "Save product"}
+            </button>
+          </div>
         </fieldset>
       </form>
     </Modal>
@@ -464,15 +504,177 @@ function History() {
     </>
   );
 }
+function AdjustStock({ product, close, saved }) {
+  const [direction, setDirection] = useState(1);
+  const [quantity, setQuantity] = useState("");
+  const { act, busy, message, setMessage } = useAction(true);
+  const delta = direction * Number(quantity);
+  const updated = product.quantity + delta;
+  const limit =
+    direction === 1 ? 2147483647 - product.quantity : product.quantity;
+  async function submit(event) {
+    event.preventDefault();
+    if (
+      !Number.isInteger(delta) ||
+      delta === 0 ||
+      updated < 0 ||
+      updated > 2147483647
+    ) {
+      setMessage(
+        "Enter a whole number within the available stock and capacity.",
+      );
+      return;
+    }
+    if (
+      await act(() =>
+        api(root + "/products/" + product.id + "/stock", {
+          method: "POST",
+          body: { delta },
+        }),
+      )
+    )
+      saved();
+  }
+  return (
+    <Modal
+      title="Adjust stock"
+      className="owner-catalog-dialog"
+      close={close}
+      busy={busy}
+    >
+      <p className="owner-dialog-product">{product.name}</p>
+      <form className="market-form" onSubmit={submit}>
+        <fieldset disabled={busy}>
+          <div
+            className="stock-direction"
+            aria-label="Adjustment type"
+            role="group"
+          >
+            <button
+              type="button"
+              aria-pressed={direction === 1}
+              onClick={() => setDirection(1)}
+            >
+              <Plus size={16} /> Add stock
+            </button>
+            <button
+              type="button"
+              aria-pressed={direction === -1}
+              onClick={() => setDirection(-1)}
+            >
+              <Minus size={16} /> Remove stock
+            </button>
+          </div>
+          <label>
+            Quantity
+            <input
+              type="number"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              required
+              min="1"
+              max={Math.max(1, limit)}
+              step="1"
+            />
+          </label>
+          <dl className="stock-adjust-summary">
+            <div>
+              <dt>Current stock</dt>
+              <dd>{product.quantity}</dd>
+            </div>
+            <div>
+              <dt>Stock after adjustment</dt>
+              <dd>
+                {quantity &&
+                Number.isInteger(delta) &&
+                updated >= 0 &&
+                updated <= 2147483647
+                  ? updated
+                  : "—"}
+              </dd>
+            </div>
+          </dl>
+          {limit === 0 && (
+            <p className="owner-form-error">
+              There are no units available for this adjustment.
+            </p>
+          )}
+          {message && (
+            <p className="owner-form-error" role="alert">
+              {message}
+            </p>
+          )}
+          <div className="owner-dialog-actions">
+            <button type="button" onClick={close}>
+              Cancel
+            </button>
+            <button className="primary" disabled={limit === 0}>
+              {busy ? "Updating stock…" : "Apply adjustment"}
+            </button>
+          </div>
+        </fieldset>
+      </form>
+    </Modal>
+  );
+}
+
+function DeleteProduct({ product, close, deleted }) {
+  const client = useQueryClient();
+  const { act, busy, message } = useAction(true);
+  async function remove(event) {
+    event.preventDefault();
+    if (
+      await act(async () => {
+        await api(root + "/products/" + product.id, { method: "DELETE" });
+        updateOwnerCatalog(client, (products) =>
+          products.filter((row) => row.id !== product.id),
+        );
+      })
+    )
+      deleted();
+  }
+  return (
+    <Modal
+      title="Delete product?"
+      className="owner-catalog-dialog"
+      close={close}
+      busy={busy}
+    >
+      <p className="owner-dialog-copy">
+        <strong>{product.name}</strong> will be removed from your product list
+        and storefront. Past orders, receipts, and stock history are kept.
+      </p>
+      <form className="market-form" onSubmit={remove}>
+        <fieldset disabled={busy}>
+          {message && (
+            <p className="owner-form-error" role="alert">
+              {message}
+            </p>
+          )}
+          <div className="owner-dialog-actions">
+            <button type="button" onClick={close}>
+              Cancel
+            </button>
+            <button className="owner-danger-button">
+              {busy ? "Deleting…" : "Delete product"}
+            </button>
+          </div>
+        </fieldset>
+      </form>
+    </Modal>
+  );
+}
+
 function Products() {
   const [params, setParams] = useSearchParams(),
     [form, F] = useState(params.has("new") ? {} : null),
     [adjust, J] = useState(null),
+    [remove, setRemove] = useState(null),
     [history, H] = useState(false),
     [notice, N] = useState(""),
     [search, S] = useState(""),
     [cat, C] = useState(""),
-    { act, busy, message } = useAction(),
+    { act, busy, message } = useAction(true),
     lowOnly = params.get("stock") === "low";
   const listing = useMarketPage(root + "/products", {
     q: search.trim(),
@@ -509,7 +711,7 @@ function Products() {
       <State query={q} empty={!shown.length} message="No products found.">
         <div className="market-panel">
           {shown.map((p) => (
-            <div className="market-row" key={p.id}>
+            <div className="market-row owner-product-row" key={p.id}>
               {p.photo && <img className="thumb" src={p.photo} alt="" />}
               <div>
                 <b>{p.name}</b>
@@ -523,24 +725,33 @@ function Products() {
                   </span>
                 )}
               </div>
-              <button onClick={() => F(p)}>Edit</button>
-              <button onClick={() => J(p)}>Adjust stock</button>
-              <button
-                disabled={busy}
-                onClick={() => {
-                  N("");
-                  act(
-                    () =>
-                      api(root + "/products/" + p.id + "/visibility", {
-                        method: "PATCH",
-                        body: { archived: !p.archived },
-                      }),
-                    "Visibility updated.",
-                  );
-                }}
-              >
-                {p.archived ? "Restore" : "Archive"}
-              </button>
+              <div className="owner-product-actions">
+                <button onClick={() => F(p)}>Edit</button>
+                <button onClick={() => J(p)}>Adjust stock</button>
+                <button
+                  disabled={busy}
+                  onClick={() => {
+                    N("");
+                    act(
+                      () =>
+                        api(root + "/products/" + p.id + "/visibility", {
+                          method: "PATCH",
+                          body: { archived: !p.archived },
+                        }),
+                      "Visibility updated.",
+                    );
+                  }}
+                >
+                  {p.archived ? "Restore" : "Archive"}
+                </button>
+                <button
+                  className="owner-delete-link"
+                  onClick={() => setRemove(p)}
+                  aria-label={"Delete " + p.name}
+                >
+                  <Trash2 size={16} /> Delete
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -558,49 +769,34 @@ function Products() {
           product={form.id ? form : null}
           close={(saved) => {
             F(null);
-            setParams({}, { replace: true });
+            if (params.has("new")) {
+              const next = new URLSearchParams(params);
+              next.delete("new");
+              setParams(next, { replace: true });
+            }
             if (saved) N("Product saved.");
           }}
         />
       )}
       {adjust && (
-        <Modal
-          title={"Adjust stock · " + adjust.name}
+        <AdjustStock
+          product={adjust}
           close={() => J(null)}
-          busy={busy}
-        >
-          <form
-            className="market-form"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const delta = Number(new FormData(e.currentTarget).get("delta"));
-              N("");
-              if (
-                await act(
-                  () =>
-                    api(root + "/products/" + adjust.id + "/stock", {
-                      method: "POST",
-                      body: { delta },
-                    }),
-                  "Stock updated.",
-                )
-              )
-                J(null);
-            }}
-          >
-            <label>
-              Units to add or subtract
-              <input
-                type="number"
-                required
-                name="delta"
-                placeholder="e.g. 5 or -2"
-              />
-            </label>
-            <button disabled={busy}>Apply adjustment</button>
-            <p role="alert">{message}</p>
-          </form>
-        </Modal>
+          saved={() => {
+            J(null);
+            N("Stock updated.");
+          }}
+        />
+      )}
+      {remove && (
+        <DeleteProduct
+          product={remove}
+          close={() => setRemove(null)}
+          deleted={() => {
+            setRemove(null);
+            N("Product deleted.");
+          }}
+        />
       )}
     </>
   );
@@ -632,16 +828,19 @@ function Incoming() {
           value={search}
           onChange={(e) => S(e.target.value)}
         />
-        <select
-          aria-label="Fulfillment status"
-          value={status}
-          onChange={(e) => T(e.target.value)}
-        >
-          <option value="">All statuses</option>
-          {["placed", "processing", "completed", "cancelled"].map((x) => (
-            <option key={x}>{x}</option>
-          ))}
-        </select>
+        <div className="market-category-select">
+          <select
+            aria-label="Fulfillment status"
+            value={status}
+            onChange={(e) => T(e.target.value)}
+          >
+            <option value="">All statuses</option>
+            {["placed", "processing", "completed", "cancelled"].map((x) => (
+              <option key={x}>{x}</option>
+            ))}
+          </select>
+          <ChevronDown size={16} aria-hidden="true" />
+        </div>
         <input
           aria-label="Order date"
           type="date"

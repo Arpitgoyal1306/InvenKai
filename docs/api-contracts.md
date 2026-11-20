@@ -1040,6 +1040,7 @@ Unexpected server errors return HTTP 500 with `{"message":"Internal Server Error
 | GET `/api/suppliers/:id/products` | Staff | Paginate the catalog with `limit` and `offset`. Set `linked=true` to return only linked products. |
 | PUT / DELETE `/api/suppliers/:id/products/:productId` | Staff | Link or unlink a product. Repeated requests are idempotent. |
 | GET `/api/orders/:id/receipt` | Order owner | Returns a receipt snapshot or `{"receipt":null}` while the receipt is unavailable. Unknown and inaccessible orders return 404. |
+| POST `/api/orders/:id/receipt` | Order owner | Returns the existing receipt or issues the same stored receipt on demand when background processing has yet to finish. Safe to retry. |
 | GET `/api/operations/summary` | Admin | PostgreSQL and Redis connectivity, outbox state counts, and receipts issued. |
 | GET `/api/operations/failed-receipts` | Admin | List receipt jobs among the latest 100 failed queue entries. |
 | POST `/api/operations/failed-receipts/:id/retry` | Admin | Retry the retained failed receipt job for this order, using the same checks as the recovery CLI. |
@@ -1073,6 +1074,8 @@ Marketplace collections accept `limit` (default 20, maximum 100) and `offset` (d
 | `/api/market/owner/summary` | Returns full-store metrics and up to 20 recent low-stock alerts. The owner products page with `stock=low` lists the complete set. |
 
 ## Orders and live updates
+
+Store owners can delete a product with `DELETE /api/market/owner/products/:id`. Deleted items disappear from owner and public catalogs and cannot be restored through the archive controls. Existing orders, receipts, and inventory history are preserved.
 
 | Method and path | Access | Behavior |
 |---|---|---|

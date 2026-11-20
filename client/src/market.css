@@ -1471,3 +1471,133 @@
 .market .stock-alerts summary .stock-alert-count {
   display: block;
 }
+
+/* Marketplace filters, product management and cart thumbnails */
+.market-category-select {
+  position: relative;
+  flex: 0 1 12.5rem;
+  min-width: 9rem;
+}
+.market-category-select select {
+  appearance: none;
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 36px 9px 13px;
+  background: #fff;
+  color: #203b32;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.market-category-select svg {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #416256;
+  pointer-events: none;
+}
+.market-filters > input {
+  min-height: 44px;
+}
+.market .owner-catalog-dialog {
+  width: min(32rem, calc(100vw - 28px));
+}
+.market .product-editor {
+  width: min(39rem, calc(100vw - 28px));
+}
+.owner-catalog-dialog .market-form input:not([type="file"]) {
+  width: 100%;
+  min-height: 44px;
+}
+.owner-dialog-product,
+.owner-dialog-copy {
+  margin: 0 0 18px;
+  line-height: 1.5;
+}
+.owner-dialog-product {
+  color: #416256;
+  font-weight: 600;
+}
+.stock-direction,
+.stock-adjust-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.stock-direction button {
+  width: 100%;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+.stock-direction button[aria-pressed="true"] {
+  border-color: #42715e;
+  background: #eaf2ec;
+  color: #1b4535;
+}
+.stock-adjust-summary {
+  margin: 0;
+  background: #f0f5ef;
+  border: 1px solid #d9e5db;
+  border-radius: 10px;
+  padding: 12px;
+}
+.stock-adjust-summary dt {
+  color: #416256;
+  font-size: .85rem;
+}
+.stock-adjust-summary dd {
+  margin: 4px 0 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+.owner-dialog-actions,
+.owner-product-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.owner-dialog-actions {
+  justify-content: flex-end;
+  padding-top: 13px;
+  border-top: 1px solid var(--edge);
+}
+.owner-product-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 36px;
+}
+.market .owner-delete-link {
+  color: #902530;
+}
+.market .owner-danger-button {
+  background: #a02834;
+  border-color: #a02834;
+  color: #fff;
+}
+.market .owner-danger-button:hover {
+  background: #7d1d27;
+}
+.owner-form-error {
+  margin: 0;
+  color: #902530;
+}
+.cart-panel .market-row > .market-placeholder svg {
+  width: 21px;
+  height: 21px;
+}
+.cart-panel .market-row > :is(img, .market-placeholder) {
+  grid-row: span 2;
+}
+@media (max-width: 560px) {
+  .market-category-select {
+    flex: 1 1 10rem;
+  }
+  .owner-product-row .owner-product-actions {
+    flex-basis: 100%;
+  }
+}

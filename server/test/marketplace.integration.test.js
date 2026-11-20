@@ -477,6 +477,67 @@ test("store publication, private inventory and fulfillment stay scoped to their 
 
     await call("get", "/reports/stock-summary", b).expect(403);
     await call("post", "/auth/ws-ticket", b, {}).expect(403);
+
+    const receiptPath = "/orders/" + orders[0].id + "/receipt";
+    await call("post", receiptPath).expect(401);
+    await call("post", receiptPath, a).expect(404);
+    const pending = await call("get", receiptPath, buyer).expect(200);
+    assert.deepEqual(pending.body, { receipt: null });
+    const issued = await call("post", receiptPath, buyer).expect(200);
+    assert.equal(issued.body.receipt.receipt_number, "INV-" + orders[0].id);
+    assert.equal(issued.body.receipt.items[0].productName, "Cup");
+    assert.deepEqual(
+      (await call("post", receiptPath, buyer).expect(200)).body,
+      issued.body,
+    );
+    assert.deepEqual(
+      (await call("get", receiptPath, buyer).expect(200)).body,
+      issued.body,
+    );
+
+    const productPath = "/market/owner/products/" + id;
+    const editedProduct = {
+      name: "Updated cup",
+      description: "",
+      category: key,
+      price: 5,
+    };
+    const photo =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jPioAAAAASUVORK5CYII=";
+    await call("put", productPath, a, { ...editedProduct, photo }).expect(200);
+    await call("put", productPath, a, editedProduct).expect(200);
+    const productsAfterEdit = await call("get", store).expect(200);
+    assert.equal(productsAfterEdit.body.products[0].photo, photo);
+
+    await call("delete", productPath, b).expect(404);
+    await call("delete", productPath, a).expect(204);
+    await call("patch", productPath + "/visibility", a, {
+      archived: false,
+    }).expect(404);
+    await call("put", productPath, a, editedProduct).expect(404);
+    await call("post", productPath + "/stock", a, { delta: 2 }).expect(404);
+    const ownerList = await call("get", "/market/owner/products", a).expect(
+      200,
+    );
+    assert.ok(!ownerList.body.products.some((product) => product.id === id));
+    assert.deepEqual((await call("get", store).expect(200)).body.products, []);
+    assert.deepEqual(
+      (await call("get", store + "/cart-products?ids=" + id).expect(200)).body
+        .products,
+      [],
+    );
+    const deletedHistory = await call("get", "/market/owner/history", a).expect(
+      200,
+    );
+    assert.ok(
+      deletedHistory.body.history.some(
+        (row) => row.name === editedProduct.name,
+      ),
+    );
+    assert.deepEqual(
+      (await call("get", receiptPath, buyer).expect(200)).body,
+      issued.body,
+    );
   } finally {
     await client.query("ROLLBACK");
     client.release();
