@@ -13,7 +13,8 @@ import { State, Table, Modal } from "./ui";
 import {
   Catalog,
   Filters,
-  matches,
+  MarketPager,
+  useMarketPage,
   OrderDetail,
   useAction,
   useMarket,
@@ -456,9 +457,7 @@ function History() {
   );
 }
 function Products() {
-  const q = useMarket(root + "/products"),
-    all = q.data?.products || [],
-    [params, setParams] = useSearchParams(),
+  const [params, setParams] = useSearchParams(),
     [form, F] = useState(params.has("new") ? {} : null),
     [adjust, J] = useState(null),
     [history, H] = useState(false),
@@ -466,10 +465,14 @@ function Products() {
     [search, S] = useState(""),
     [cat, C] = useState(""),
     { act, busy, message } = useAction(),
-    lowOnly = params.get("stock") === "low",
-    shown = all.filter(
-      (p) => matches(p, search, cat) && (!lowOnly || isLowStock(p)),
-    );
+    lowOnly = params.get("stock") === "low";
+  const listing = useMarketPage(root + "/products", {
+    q: search.trim(),
+    category: cat,
+    stock: lowOnly ? "low" : "",
+  });
+  const q = listing.query;
+  const shown = q.data?.products || [];
   return (
     <>
       <div className="market-title">
@@ -487,7 +490,7 @@ function Products() {
         </button>
       </div>
       <Filters
-        list={all}
+        categories={q.data?.categories || []}
         search={search}
         setSearch={S}
         category={cat}
@@ -534,6 +537,7 @@ function Products() {
           ))}
         </div>
       </State>
+      <MarketPager listing={listing} />
       <div className="market-actions">
         <Link to="/owner/preview">Preview store →</Link>
         <button onClick={() => H(!history)}>
@@ -594,19 +598,22 @@ function Products() {
   );
 }
 function Incoming() {
-  const q = useMarket(root + "/orders"),
-    [search, S] = useState(""),
+  const [search, S] = useState(""),
     [status, T] = useState(""),
     [date, D] = useState(""),
-    [selected, O] = useState(null),
-    shown = (q.data?.orders || []).filter(
-      (o) =>
-        String(o.id).includes(search.replace("#", "")) &&
-        (!status || status === o.status) &&
-        (!date ||
-          new Date(o.created_at).toDateString() ===
-            new Date(date + "T12:00:00").toDateString()),
-    );
+    [selected, O] = useState(null);
+  const day = date ? new Date(date + "T00:00:00") : null;
+  const utcOffset = day?.getTimezoneOffset();
+  if (day) day.setDate(day.getDate() + 1);
+  const listing = useMarketPage(root + "/orders", {
+    q: search.trim().replace("#", ""),
+    status,
+    date,
+    utcOffset,
+    endOffset: day?.getTimezoneOffset(),
+  });
+  const q = listing.query;
+  const shown = q.data?.orders || [];
   return (
     <>
       <h1>Incoming orders</h1>
@@ -654,23 +661,20 @@ function Incoming() {
           }))}
         />
       </State>
+      <MarketPager listing={listing} />
       {selected && <OrderDetail owner order={selected} close={() => O(null)} />}
     </>
   );
 }
 function Overview({ store }) {
-  const products = useMarket(root + "/products"),
-    orders = useMarket(root + "/orders"),
-    active = (products.data?.products || []).filter((p) => !p.archived),
-    low = active.filter(isLowStock),
-    incoming = orders.data?.orders || [],
-    sales = incoming
-      .filter(
-        (o) =>
-          o.status !== "cancelled" &&
-          Date.now() - Date.parse(o.created_at) < 30 * 86400000,
-      )
-      .reduce((sum, o) => sum + Number(o.total_amount), 0);
+  const summary = useMarket(root + "/summary");
+  const {
+    activeProducts = 0,
+    lowProducts = 0,
+    newOrders = 0,
+    sales = 0,
+    alerts = [],
+  } = summary.data || {};
   return (
     <>
       <div
@@ -698,61 +702,59 @@ function Overview({ store }) {
         <Link to="/owner/orders">View incoming orders</Link>
         <Link to="/owner/preview">Preview store</Link>
       </div>
-      <State query={products}>
-        <State query={orders}>
-          {!store.published && (
-            <section className="market-panel">
-              <h2>
-                {active.length
-                  ? "Publish your store"
-                  : "Add your first product"}
-              </h2>
-              <p>
-                {active.length
-                  ? "Publish to list your store and its active products in Explore stores."
-                  : "Your draft is saved. Add a product with its price and opening stock."}
-              </p>
-              {active.length > 0 && <Publication store={store} />}
+      <State query={summary}>
+        {!store.published && (
+          <section className="market-panel">
+            <h2>
+              {activeProducts ? "Publish your store" : "Add your first product"}
+            </h2>
+            <p>
+              {activeProducts
+                ? "Publish to list your store and its active products in Explore stores."
+                : "Your draft is saved. Add a product with its price and opening stock."}
+            </p>
+            {activeProducts > 0 && <Publication store={store} />}
+          </section>
+        )}
+        <div className="market-metrics">
+          {[
+            [ShoppingBag, "New orders", newOrders],
+            [Store, "Order value · last 30 days", amount(sales)],
+            [Package, "Active products", activeProducts],
+            [TriangleAlert, "Low-stock products", lowProducts],
+          ].map(([Icon, label, value]) => (
+            <section key={label}>
+              <Icon size={20} />
+              <small>{label}</small>
+              <b>{value}</b>
             </section>
-          )}
-          <div className="market-metrics">
-            {[
-              [
-                ShoppingBag,
-                "New orders",
-                incoming.filter((o) => o.status === "placed").length,
-              ],
-              [Store, "Order value · last 30 days", amount(sales)],
-              [Package, "Active products", active.length],
-              [TriangleAlert, "Low-stock products", low.length],
-            ].map(([Icon, label, value]) => (
-              <section key={label}>
-                <Icon size={20} />
-                <small>{label}</small>
-                <b>{value}</b>
-              </section>
+          ))}
+        </div>
+        {lowProducts > 0 && (
+          <section className="market-panel">
+            <h2>Low-stock alerts</h2>
+            {alerts.map((p) => (
+              <div className="market-row" key={p.id}>
+                <b>{p.name}</b>
+                <span>{p.quantity} remaining</span>
+                <Link to="/owner/products?stock=low">Manage stock</Link>
+              </div>
             ))}
-          </div>
-          {low.length > 0 && (
-            <section className="market-panel">
-              <h2>Low-stock alerts</h2>
-              {low.map((p) => (
-                <div className="market-row" key={p.id}>
-                  <b>{p.name}</b>
-                  <span>{p.quantity} remaining</span>
-                  <Link to="/owner/products?stock=low">Manage stock</Link>
-                </div>
-              ))}
-            </section>
-          )}
-        </State>
+          </section>
+        )}
       </State>
       <PublicLink store={store} />
     </>
   );
 }
 function Preview({ store }) {
-  const q = useMarket(root + "/products");
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("");
+  const q = useMarketPage(root + "/products", {
+    q: search.trim(),
+    category,
+    visibility: "public",
+  });
   return (
     <>
       <div className="market-title">
@@ -760,9 +762,14 @@ function Preview({ store }) {
         <Publication store={store} />
       </div>
       <PublicLink store={store} />
-      <State query={q}>
-        <Catalog store={store} products={q.data?.products || []} />
-      </State>
+      <Catalog
+        store={store}
+        listing={q}
+        search={search}
+        setSearch={setSearch}
+        category={category}
+        setCategory={setCategory}
+      />
     </>
   );
 }

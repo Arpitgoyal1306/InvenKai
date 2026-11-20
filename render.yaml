@@ -17,3 +17,43 @@ services:
         sync: false
       - key: CLIENT_URL
         sync: false
+  - type: worker
+    name: invenkai-order-dispatcher
+    runtime: node
+    plan: 0.5c-512mb
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm run dispatcher:orders
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromService:
+          name: invenkai-backend
+          type: web
+          envVarKey: DATABASE_URL
+      - key: REDIS_URL
+        fromService:
+          name: invenkai-backend
+          type: web
+          envVarKey: REDIS_URL
+  - type: worker
+    name: invenkai-receipt-worker
+    runtime: node
+    plan: 0.5c-512mb
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm run worker:orders
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromService:
+          name: invenkai-backend
+          type: web
+          envVarKey: DATABASE_URL
+      - key: REDIS_URL
+        fromService:
+          name: invenkai-backend
+          type: web
+          envVarKey: REDIS_URL

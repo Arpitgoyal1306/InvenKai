@@ -13,15 +13,16 @@ function isValidDate(value) {
 
   const date = new Date(`${value}T00:00:00.000Z`);
 
-  return !Number.isNaN(date.getTime()) &&
-    date.toISOString().slice(0, 10) === value;
+  return (
+    !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+  );
 }
 
 // Validate the requested stock movement date range.
 function validateDateRange(startDate, endDate) {
   if (!isValidDate(startDate) || !isValidDate(endDate)) {
     const error = new Error(
-      "startDate and endDate must be valid dates in YYYY-MM-DD format"
+      "startDate and endDate must be valid dates in YYYY-MM-DD format",
     );
     error.statusCode = 400;
     throw error;
@@ -29,7 +30,7 @@ function validateDateRange(startDate, endDate) {
 
   if (endDate < startDate) {
     const error = new Error(
-      "endDate must be greater than or equal to startDate"
+      "endDate must be greater than or equal to startDate",
     );
     error.statusCode = 400;
     throw error;
@@ -49,6 +50,7 @@ async function getStockSummary(db = pool) {
     FROM products p
     LEFT JOIN inventory i
       ON i.product_id = p.id
+    WHERE p.store_id IS NULL AND NOT p.archived
   `);
 
   const summary = result.rows[0];
@@ -83,7 +85,7 @@ async function getCategoryStock(categoryId, db = pool) {
       COALESCE(SUM(i.quantity), 0)::BIGINT AS total_stock_quantity
     FROM categories c
     LEFT JOIN products p
-      ON p.category_id = c.id
+      ON p.category_id = c.id AND p.store_id IS NULL AND NOT p.archived
     LEFT JOIN inventory i
       ON i.product_id = p.id
   `;
@@ -93,10 +95,7 @@ async function getCategoryStock(categoryId, db = pool) {
   if (categoryId !== undefined) {
     const parsedCategoryId = Number(categoryId);
 
-    if (
-      !Number.isInteger(parsedCategoryId) ||
-      parsedCategoryId <= 0
-    ) {
+    if (!Number.isInteger(parsedCategoryId) || parsedCategoryId <= 0) {
       const error = new Error("categoryId must be a positive integer");
       error.statusCode = 400;
       throw error;
@@ -135,27 +134,27 @@ async function getStockMovement(startDate, endDate, db = pool) {
     `
       SELECT
         COALESCE(
-          SUM(quantity) FILTER (
-            WHERE transaction_type = 'increase'
+          SUM(t.quantity) FILTER (
+            WHERE t.transaction_type = 'increase'
           ),
           0
         ) AS total_added,
         COALESCE(
-          SUM(quantity) FILTER (
-            WHERE transaction_type = 'decrease'
+          SUM(t.quantity) FILTER (
+            WHERE t.transaction_type = 'decrease'
           ),
           0
         ) AS total_removed
-      FROM inventory_transactions
-      WHERE created_at >= (
+      FROM inventory_transactions t JOIN products p ON p.id = t.product_id
+      WHERE p.store_id IS NULL AND t.created_at >= (
         $1::date::timestamp AT TIME ZONE 'UTC'
       )
-      AND created_at < (
+      AND t.created_at < (
         ($2::date + INTERVAL '1 day')::timestamp
         AT TIME ZONE 'UTC'
       )
     `,
-    values
+    values,
   );
 
   // Daily stock movement during the same date range.
@@ -163,33 +162,33 @@ async function getStockMovement(startDate, endDate, db = pool) {
     `
       SELECT
         TO_CHAR(
-            (created_at AT TIME ZONE 'UTC')::date,
+            (t.created_at AT TIME ZONE 'UTC')::date,
             'YYYY-MM-DD'
         ) AS date,
         COALESCE(
-          SUM(quantity) FILTER (
-            WHERE transaction_type = 'increase'
+          SUM(t.quantity) FILTER (
+            WHERE t.transaction_type = 'increase'
           ),
           0
         ) AS stock_added,
         COALESCE(
-          SUM(quantity) FILTER (
-            WHERE transaction_type = 'decrease'
+          SUM(t.quantity) FILTER (
+            WHERE t.transaction_type = 'decrease'
           ),
           0
         ) AS stock_removed
-      FROM inventory_transactions
-      WHERE created_at >= (
+      FROM inventory_transactions t JOIN products p ON p.id = t.product_id
+      WHERE p.store_id IS NULL AND t.created_at >= (
         $1::date::timestamp AT TIME ZONE 'UTC'
       )
-      AND created_at < (
+      AND t.created_at < (
         ($2::date + INTERVAL '1 day')::timestamp
         AT TIME ZONE 'UTC'
       )
-      GROUP BY (created_at AT TIME ZONE 'UTC')::date
+      GROUP BY (t.created_at AT TIME ZONE 'UTC')::date
       ORDER BY date ASC
     `,
-    values
+    values,
   );
 
   const totalAdded = Number(totalsResult.rows[0].total_added);

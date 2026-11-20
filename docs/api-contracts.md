@@ -1044,7 +1044,7 @@ Unexpected server errors return HTTP 500 with `{"message":"Internal Server Error
 | GET `/api/operations/failed-receipts` | Admin | List receipt jobs among the latest 100 failed queue entries. |
 | POST `/api/operations/failed-receipts/:id/retry` | Admin | Retry the retained failed receipt job for this order, using the same checks as the recovery CLI. |
 
-Staff access includes inventory managers and admins. The receipt worker and dispatcher must be running to generate receipts.
+Staff access includes inventory managers and admins. Platform supplier links only accept active warehouse products. Existing links to archived warehouse products can still be viewed and removed. The receipt worker and dispatcher must be running to generate receipts.
 
 ## Catalog and inventory integration
 
@@ -1054,6 +1054,22 @@ Platform product creation and updates accept optional `low_stock_threshold` as a
 |---|---|---|
 | GET `/api/categories` | Staff | Returns `{categories: [{id, name}]}`. |
 | GET `/api/inventory?limit=20&offset=0` | Staff | Returns `{products, pagination}`. Each row includes ID, SKU, name, category ID and name, price, quantity, and threshold. |
+
+Warehouse stock reads, adjustments, low-stock queries, and current-stock reports include active products with no store. Warehouse history and stock movement include earlier transactions for archived warehouse products. Seller stock stays in the owner marketplace APIs.
+
+## Marketplace pagination
+
+Marketplace collections accept `limit` (default 20, maximum 100) and `offset` (default 0). Their response includes `pagination: {limit, offset, hasMore}`.
+
+| GET route | Supported filters and response |
+|---|---|
+| `/api/market/stores` | `q` (store name) and `category`. Returns store cards with up to three active product previews per store. |
+| `/api/market/stores/:slug` | `q` (product name) and `category`. Returns the published store, its current product page and all its public product categories. |
+| `/api/market/stores/:slug/cart-products` | `ids`, up to 50 comma-separated product IDs. Returns current prices and availability for the active products at that store. |
+| `/api/market/owner/products` | `q`, `category`, `stock=low`, and `visibility=public` to exclude archived products in previews. Categories cover the complete catalog for the chosen visibility. |
+| `/api/market/owner/orders` | `q` (order number), `status`, and `date` (YYYY-MM-DD). Optional `utcOffset` and `endOffset` specify minutes west of UTC at the day's start and end. |
+| `/api/market/purchases` | Returns the authenticated buyer's order page. |
+| `/api/market/owner/summary` | Returns full-store metrics and up to 20 recent low-stock alerts. The owner products page with `stock=low` lists the complete set. |
 
 ## Orders and live updates
 
@@ -1066,8 +1082,10 @@ Platform product creation and updates accept optional `low_stock_threshold` as a
 | PATCH `/api/market/owner/orders/:id` | Receiving store owner | Advances `placed` to `processing`, or `processing` to `completed`. |
 | POST `/api/auth/ws-ticket` | Staff | Issues a short-lived, single-use ticket for `/ws?ticket=...`. |
 | GET `/api/market/live` | Public | Streams storefront refresh signals. |
-| GET `/api/market/owner/live` | Authenticated seller | Streams owner-scoped inventory refresh signals. |
+| GET `/api/market/owner/live` | Authenticated seller | Streams owner-scoped catalog, inventory, and fulfillment refresh signals. |
 
 Both checkout endpoints accept an optional `Idempotency-Key` header with 1–128 visible ASCII characters. Retrying the same checkout as the same buyer returns the original order. Reusing the key for different checkout data returns 409. A successful transaction stores the key with the order and enqueues the receipt through the outbox. A rolled-back transaction leaves the key available for retry.
 
 Staff WebSockets deliver `inventory.updated` events. Redis Pub/Sub is best effort. Refresh the inventory API after reconnecting. Fulfillment status is available through the order APIs.
+
+Marketplace catalog and owner views switch to eight-second polling if their SSE stream disconnects. Buyer purchases continue polling for fulfillment. The API uses one PostgreSQL `LISTEN` session per process while streams are connected. For non-Neon transaction poolers, set `MARKET_LISTEN_DATABASE_URL` to a direct connection for the same database. Neon pooled hostnames are converted to the corresponding direct hostname for this listener.

@@ -160,7 +160,7 @@ test("getLowStockProducts propagates database errors", async () => {
 
 test("increaseStock updates inventory and records history in one transaction", async () => {
   const { calls, connectMock, client } = mockClient(async (sql) => {
-    if (sql.includes("SELECT product_id, quantity")) {
+    if (sql.includes("FOR UPDATE OF p, i")) {
       return {
         rowCount: 1,
         rows: [{ product_id: 1, quantity: 10 }],
@@ -196,7 +196,7 @@ test("increaseStock updates inventory and records history in one transaction", a
 
 test("decreaseStock updates inventory and records history in one transaction", async () => {
   const { calls, connectMock, client } = mockClient(async (sql) => {
-    if (sql.includes("SELECT product_id, quantity")) {
+    if (sql.includes("FOR UPDATE OF p, i")) {
       return {
         rowCount: 1,
         rows: [{ product_id: 1, quantity: 10 }],
@@ -246,7 +246,7 @@ test("increaseStock rolls back when inventory does not exist", async () => {
 
 test("decreaseStock rejects insufficient stock and rolls back", async () => {
   const { calls, connectMock } = mockClient(async (sql) => {
-    if (sql.includes("SELECT product_id, quantity")) {
+    if (sql.includes("FOR UPDATE OF p, i")) {
       return {
         rowCount: 1,
         rows: [{ product_id: 1, quantity: 2 }],
@@ -270,7 +270,7 @@ test("decreaseStock rejects insufficient stock and rolls back", async () => {
 
 test("increaseStock rejects stock overflow and rolls back", async () => {
   const { calls, connectMock } = mockClient(async (sql) => {
-    if (sql.includes("SELECT product_id, quantity")) {
+    if (sql.includes("FOR UPDATE OF p, i")) {
       return {
         rowCount: 1,
         rows: [{ product_id: 1, quantity: 2147483640 }],
@@ -294,7 +294,7 @@ test("increaseStock rejects stock overflow and rolls back", async () => {
 
 test("stock change rolls back when history insertion fails", async () => {
   const { calls, connectMock, client } = mockClient(async (sql) => {
-    if (sql.includes("SELECT product_id, quantity")) {
+    if (sql.includes("FOR UPDATE OF p, i")) {
       return {
         rowCount: 1,
         rows: [{ product_id: 1, quantity: 10 }],
@@ -363,11 +363,11 @@ test("getInventoryTransactions returns filtered paginated history", async () => 
     assert.deepEqual(result, rows);
     assert.match(
       queryMock.mock.calls[0].arguments[0],
-      /WHERE product_id = \$1/,
+      /AND t\.product_id = \$1/,
     );
     assert.match(
       queryMock.mock.calls[0].arguments[0],
-      /ORDER BY created_at DESC/,
+      /ORDER BY t\.created_at DESC/,
     );
     assert.deepEqual(queryMock.mock.calls[0].arguments[1], [1, 10, 0]);
   } finally {
@@ -385,7 +385,7 @@ test("publishes inventory update only after COMMIT", async () => {
     query: async (sql) => {
       calls.push(sql.trim());
 
-      if (sql.includes("SELECT product_id, quantity")) {
+      if (sql.includes("FOR UPDATE OF p, i")) {
         return {
           rowCount: 1,
           rows: [{ product_id: 1, quantity: 10 }],
@@ -439,7 +439,7 @@ test("does not publish inventory update when transaction rolls back", async () =
     query: async (sql) => {
       calls.push(sql.trim());
 
-      if (sql.includes("SELECT product_id, quantity")) {
+      if (sql.includes("FOR UPDATE OF p, i")) {
         return {
           rowCount: 1,
           rows: [{ product_id: 1, quantity: 10 }],
@@ -480,7 +480,7 @@ test("publisher failure does not fail a committed stock update", async () => {
     query: async (sql) => {
       calls.push(sql.trim());
 
-      if (sql.includes("SELECT product_id, quantity")) {
+      if (sql.includes("FOR UPDATE OF p, i")) {
         return {
           rowCount: 1,
           rows: [{ product_id: 1, quantity: 10 }],

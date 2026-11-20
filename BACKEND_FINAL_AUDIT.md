@@ -1,4 +1,4 @@
-# InvenKai Backend Final Audit & Reliability Verification Report
+# InvenKai Backend Audit & Reliability Verification Report (Historical)
 
 **Date:** November 19, 2026  
 **Auditor:** Senior Backend Engineer & Database Architect  
@@ -7,6 +7,8 @@
 **Base Commit:** `bad89fd` (Merge pull request #44 from Pranayraut18206/feature/dbms-schema-and-er)
 
 ---
+
+> This audit records the November 19, 2026 snapshot. Its paths, migration count, and GitHub statuses describe that revision. For the current layout, see the [database guide](docs/database.md), [API contracts](docs/api-contracts.md), and [deployment instructions](README.md).
 
 ## A. Executive Summary
 

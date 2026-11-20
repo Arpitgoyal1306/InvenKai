@@ -85,7 +85,7 @@ test("PATCH increase stock successfully for inventory manager", async () => {
   const token = createToken("inventory_manager");
 
   const { calls, connectMock, client } = mockTransactionClient(async (sql) => {
-    if (sql.includes("SELECT product_id, quantity")) {
+    if (sql.includes("FOR UPDATE OF p, i")) {
       return {
         rowCount: 1,
         rows: [{ product_id: 1, quantity: 10 }],
@@ -130,7 +130,7 @@ test("PATCH increase stock successfully for admin", async () => {
   const token = createToken("admin");
 
   const { connectMock } = mockTransactionClient(async (sql) => {
-    if (sql.includes("SELECT product_id, quantity")) {
+    if (sql.includes("FOR UPDATE OF p, i")) {
       return {
         rowCount: 1,
         rows: [{ product_id: 1, quantity: 15 }],
@@ -228,7 +228,7 @@ test("PATCH increase stock returns 409 when stock limit is exceeded", async () =
   const token = createToken("inventory_manager");
 
   const { connectMock } = mockTransactionClient(async (sql) => {
-    if (sql.includes("SELECT product_id, quantity")) {
+    if (sql.includes("FOR UPDATE OF p, i")) {
       return {
         rowCount: 1,
         rows: [{ product_id: 1, quantity: 2147483640 }],
@@ -277,7 +277,7 @@ test("PATCH decrease stock successfully records history", async () => {
   const token = createToken("inventory_manager");
 
   const { calls, connectMock } = mockTransactionClient(async (sql) => {
-    if (sql.includes("SELECT product_id, quantity")) {
+    if (sql.includes("FOR UPDATE OF p, i")) {
       return {
         rowCount: 1,
         rows: [{ product_id: 1, quantity: 10 }],
@@ -318,7 +318,7 @@ test("PATCH decrease stock returns 409 when stock is insufficient", async () => 
   const token = createToken("inventory_manager");
 
   const { connectMock } = mockTransactionClient(async (sql) => {
-    if (sql.includes("SELECT product_id, quantity")) {
+    if (sql.includes("FOR UPDATE OF p, i")) {
       return {
         rowCount: 1,
         rows: [{ product_id: 1, quantity: 2 }],

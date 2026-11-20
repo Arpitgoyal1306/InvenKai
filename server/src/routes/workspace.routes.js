@@ -82,7 +82,9 @@ router.get("/suppliers/:id/products", ...staff, async (req, res) => {
   const { rows } = await pool.query(
     `SELECT p.id,p.name,p.sku,sp.supplier_id IS NOT NULL AS linked
      FROM products p LEFT JOIN supplier_products sp ON sp.product_id=p.id AND sp.supplier_id=$1
-     WHERE ($2::boolean = false OR sp.supplier_id IS NOT NULL)
+     WHERE p.store_id IS NULL
+       AND (NOT p.archived OR sp.supplier_id IS NOT NULL)
+       AND ($2::boolean = false OR sp.supplier_id IS NOT NULL)
      ORDER BY p.name,p.id LIMIT $3 OFFSET $4`,
     [req.params.id, req.query.linked === "true", limit, offset],
   );
@@ -93,10 +95,18 @@ router.put("/suppliers/:id/products/:productId", ...staff, async (req, res) => {
   validateProductId(req.params.id);
   validateProductId(req.params.productId);
   try {
-    await pool.query(
-      "INSERT INTO supplier_products(supplier_id, product_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+    const product = await pool.query(
+      `WITH target AS (
+         SELECT id FROM products WHERE id=$2 AND store_id IS NULL AND NOT archived FOR UPDATE
+       ), linked AS (
+         INSERT INTO supplier_products(supplier_id, product_id)
+         SELECT $1, id FROM target ON CONFLICT DO NOTHING
+       )
+       SELECT id FROM target`,
       [req.params.id, req.params.productId],
     );
+    if (!product.rowCount)
+      return res.status(404).json({ message: "Warehouse product not found." });
   } catch (error) {
     if (error.code === "23503")
       return res
@@ -116,7 +126,8 @@ router.delete(
     validateProductId(req.params.id);
     validateProductId(req.params.productId);
     await pool.query(
-      "DELETE FROM supplier_products WHERE supplier_id=$1 AND product_id=$2",
+      `DELETE FROM supplier_products sp USING products p
+       WHERE sp.supplier_id=$1 AND sp.product_id=$2 AND p.id=sp.product_id AND p.store_id IS NULL`,
       [req.params.id, req.params.productId],
     );
     return res.sendStatus(204);

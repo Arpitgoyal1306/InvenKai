@@ -86,3 +86,13 @@ Run these commands using the same image and environment configuration:
 | Receipt worker | `npm run worker:orders` |
 
 The image runs these commands from `/app/server` and serves the frontend, API, `/health`, and `/ws` on the configured port. The same layout also works without Docker after building `client/dist` and starting the server with `NODE_ENV=production`. If there are legacy orders predating the timestamp migration, use the [historical timezone instructions](DEVELOPER_ONBOARDING.md#d-apply-database-migrations) before migrating.
+
+### Deploy the API and receipt processes on Render
+
+The repository Blueprint uses the native Node runtime and defines the API (`invenkai-backend`), outbox dispatcher (`invenkai-order-dispatcher`), and receipt worker (`invenkai-receipt-worker`). On an existing deployment, check the Blueprint's API service name against the live service name before syncing so the workers inherit `DATABASE_URL` and `REDIS_URL` from the right service. Keep all three in the same Render region when using a private Redis endpoint. Render background workers require paid compute. Review the plan and run migrations before syncing the release.
+
+Render uses `/health` for routing. It checks PostgreSQL, so the API can still serve database-backed requests during a Redis outage. `/ready` checks both dependencies and returns 503 when either is unavailable. Neither endpoint checks receipt throughput. To verify receipt processing after launch, check dispatcher and worker logs and confirm a test order progresses from outbox dispatch to an issued receipt.
+
+The [database guide](docs/database.md) covers the current schema and inventory boundaries.
+
+The production frontend is the [inven-kai Vercel project](https://inven-kai.vercel.app/). Its Root Directory is `client`. Set `VITE_API_URL` to the public backend origin and deploy from `main`.

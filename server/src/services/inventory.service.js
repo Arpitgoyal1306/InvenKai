@@ -17,7 +17,7 @@ function createInventoryService({
     const result = await db.query(
       `SELECT product_id, quantity, created_at, updated_at
        FROM inventory
-       WHERE product_id = $1 AND EXISTS (SELECT 1 FROM products WHERE id=$1 AND store_id IS NULL)`,
+       WHERE product_id = $1 AND EXISTS (SELECT 1 FROM products WHERE id=$1 AND store_id IS NULL AND NOT archived)`,
       [productId],
     );
 
@@ -37,7 +37,7 @@ function createInventoryService({
        INNER JOIN inventory i ON i.product_id = p.id
        WHERE p.low_stock_threshold IS NOT NULL
          AND i.quantity <= p.low_stock_threshold
-         AND NOT p.archived
+         AND p.store_id IS NULL AND NOT p.archived
        ORDER BY i.quantity ASC, p.name ASC`,
     );
 
@@ -67,10 +67,10 @@ function createInventoryService({
       await client.query("BEGIN");
 
       const inventoryResult = await client.query(
-        `SELECT product_id, quantity
-         FROM inventory
-         WHERE product_id = $1
-         FOR UPDATE`,
+        `SELECT i.product_id, i.quantity
+         FROM inventory i JOIN products p ON p.id = i.product_id
+         WHERE i.product_id = $1 AND p.store_id IS NULL AND NOT p.archived
+         FOR UPDATE OF p, i`,
         [productId],
       );
 
@@ -173,11 +173,11 @@ function createInventoryService({
     offset = 0,
   }) {
     const values = [];
-    let whereClause = "";
+    let productFilter = "";
 
     if (productId !== undefined) {
       values.push(productId);
-      whereClause = `WHERE product_id = $${values.length}`;
+      productFilter = `AND t.product_id = $${values.length}`;
     }
 
     values.push(limit);
@@ -188,17 +188,11 @@ function createInventoryService({
 
     const result = await db.query(
       `SELECT
-         id,
-         product_id,
-         performed_by,
-         transaction_type,
-         quantity,
-         quantity_before,
-         quantity_after,
-         created_at
-       FROM inventory_transactions
-       ${whereClause}
-       ORDER BY created_at DESC, id DESC
+         t.id, t.product_id, t.performed_by, t.transaction_type, t.quantity,
+         t.quantity_before, t.quantity_after, t.created_at
+       FROM inventory_transactions t JOIN products p ON p.id = t.product_id
+       WHERE p.store_id IS NULL ${productFilter}
+       ORDER BY t.created_at DESC, t.id DESC
        LIMIT ${limitPlaceholder}
        OFFSET ${offsetPlaceholder}`,
       values,

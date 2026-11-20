@@ -87,16 +87,59 @@ async function transaction(fn) {
 }
 const publicFields =
   "id,name,slug,description,category,contact,pickup,logo,cover";
-async function catalog(storeId, owner = false, client = db) {
-  return (
-    await client.query(
-      `SELECT p.id,p.name,p.description,p.photo,p.price,c.name AS category,i.quantity
-    ${owner ? ",p.archived,p.low_stock_threshold" : ""}
-    FROM products p JOIN inventory i ON i.product_id=p.id JOIN categories c ON c.id=p.category_id
-    WHERE p.store_id=$1 AND ($2 OR NOT p.archived) ORDER BY p.id DESC`,
-      [storeId, owner],
-    )
-  ).rows;
+function pagination(query) {
+  const limit = Number(query.limit ?? 20);
+  const offset = Number(query.offset ?? 0);
+  if (
+    (query.limit !== undefined && typeof query.limit !== "string") ||
+    (query.offset !== undefined && typeof query.offset !== "string") ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > 100 ||
+    !Number.isSafeInteger(offset) ||
+    offset < 0
+  )
+    fail("Use limit 1–100 and a non-negative offset.");
+  return { limit, offset };
+}
+async function pageRows(client, sql, values, { limit, offset }) {
+  const { rows } = await client.query(
+    sql + ` LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+    [...values, limit + 1, offset],
+  );
+  return {
+    rows: rows.slice(0, limit),
+    pagination: { limit, offset, hasMore: rows.length > limit },
+  };
+}
+const catalogStock =
+  "NOT p.archived AND (i.quantity <= COALESCE(p.low_stock_threshold, 3))";
+async function catalog(storeId, query, { owner = false, client = db } = {}) {
+  const showArchived = owner && query.visibility !== "public";
+  const search = text(query.q ?? "", 200, false);
+  const category = text(query.category ?? "", 100, false);
+  const { rows: products, pagination: paging } = await pageRows(
+    client,
+    `SELECT p.id,p.name,p.description,p.photo,p.price,c.name AS category,i.quantity
+      ${owner ? ",p.archived,p.low_stock_threshold" : ""}
+      FROM products p JOIN inventory i ON i.product_id=p.id JOIN categories c ON c.id=p.category_id
+      WHERE p.store_id=$1 AND ($2 OR NOT p.archived)
+        AND strpos(lower(p.name), lower($3)) > 0 AND ($4 = '' OR c.name = $4)
+        AND (NOT $5 OR (${catalogStock}))
+      ORDER BY p.id DESC`,
+    [storeId, showArchived, search, category, owner && query.stock === "low"],
+    pagination(query),
+  );
+  const categories = await client.query(
+    `SELECT DISTINCT c.name FROM products p JOIN categories c ON c.id=p.category_id
+      WHERE p.store_id=$1 AND ($2 OR NOT p.archived) ORDER BY c.name`,
+    [storeId, showArchived],
+  );
+  return {
+    products,
+    categories: categories.rows.map((row) => row.name),
+    pagination: paging,
+  };
 }
 const live = require("../services/market-live.service");
 router.get("/live", live.attach);
@@ -105,20 +148,24 @@ router.get("/stores", async (req, res) => {
   const search = text(req.query.q ?? "", 120, false);
   const category = text(req.query.category ?? "", 100, false);
   const [stores, categories] = await Promise.all([
-    db.query(
+    pageRows(
+      db,
       `SELECT s.name,s.slug,s.description,s.category,s.logo,s.cover,
           COALESCE((
             SELECT json_agg(json_build_object(
               'id', p.id::text, 'name', p.name, 'price', p.price::text, 'quantity', i.quantity
             ) ORDER BY p.id DESC)
-            FROM products p JOIN inventory i ON i.product_id=p.id
-            WHERE p.store_id=s.id AND NOT p.archived
+            FROM (
+              SELECT id,name,price FROM products
+              WHERE store_id=s.id AND NOT archived ORDER BY id DESC LIMIT 3
+            ) p JOIN inventory i ON i.product_id=p.id
           ), '[]'::json) AS products
        FROM stores s
        WHERE s.published AND strpos(lower(s.name), lower($1)) > 0
          AND ($2 = '' OR lower(s.category) = lower($2))
        ORDER BY s.name,s.id`,
       [search, category],
+      pagination(req.query),
     ),
     db.query(
       "SELECT DISTINCT category FROM stores WHERE published ORDER BY category",
@@ -126,6 +173,7 @@ router.get("/stores", async (req, res) => {
   ]);
   res.json({
     stores: stores.rows,
+    pagination: stores.pagination,
     categories: categories.rows.map((row) => row.category),
   });
 });
@@ -138,9 +186,28 @@ router.get("/stores/:slug", async (req, res) => {
       )
     ).rows[0];
     if (!store) fail("This store is unavailable.", 404);
-    return { store, products: await catalog(store.id, false, client) };
+    const listing = await catalog(store.id, req.query, { client });
+    return { store, ...listing };
   });
   res.json(storefront);
+});
+router.get("/stores/:slug/cart-products", async (req, res) => {
+  const ids = text(req.query.ids ?? "", 1000).split(",");
+  if (
+    ids.length > 50 ||
+    ids.some(
+      (id) => !/^[1-9]\d{0,18}$/.test(id) || BigInt(id) > 9223372036854775807n,
+    )
+  ) {
+    fail("Invalid cart product IDs.");
+  }
+  const { rows: products } = await db.query(
+    `SELECT p.id,p.name,p.photo,p.price,i.quantity
+      FROM stores s JOIN products p ON p.store_id=s.id JOIN inventory i ON i.product_id=p.id
+      WHERE s.slug=$1 AND s.published AND NOT p.archived AND p.id=ANY($2::bigint[])`,
+    [req.params.slug, ids],
+  );
+  res.json({ products });
 });
 router.post("/stores/:slug/orders", auth, async (req, res) => {
   try {
@@ -182,17 +249,17 @@ router.post("/stores/:slug/orders", auth, async (req, res) => {
   }
 });
 router.get("/purchases", auth, async (req, res) => {
-  res.json({
-    orders: (
-      await db.query(
-        `SELECT o.id,o.status,o.total_amount,o.created_at,o.pickup_snapshot,
-    COALESCE(s.name,'InvenKai') store_name, s.slug FROM orders o LEFT JOIN stores s ON s.id=o.store_id
-    WHERE o.user_id=$1 ORDER BY o.created_at DESC,o.id DESC`,
-        [req.user.id],
-      )
-    ).rows,
-  });
+  const { rows: orders, pagination: paging } = await pageRows(
+    db,
+    `SELECT o.id,o.status,o.total_amount,o.created_at,o.pickup_snapshot,
+      COALESCE(s.name,'InvenKai') store_name, s.slug FROM orders o LEFT JOIN stores s ON s.id=o.store_id
+      WHERE o.user_id=$1 ORDER BY o.created_at DESC,o.id DESC`,
+    [req.user.id],
+    pagination(req.query),
+  );
+  res.json({ orders, pagination: paging });
 });
+
 router.use("/owner", auth, async (req, res, next) => {
   req.store = (
     await db.query("SELECT * FROM stores WHERE owner_id=$1", [req.user.id])
@@ -278,7 +345,7 @@ router.put("/owner/publication", async (req, res) => {
   res.json({ store: result.rows[0] });
 });
 router.get("/owner/products", async (req, res) =>
-  res.json({ products: await catalog(req.store.id, true) }),
+  res.json(await catalog(req.store.id, req.query, { owner: true })),
 );
 async function saveProduct(req, res) {
   const b = req.body || {},
@@ -400,16 +467,71 @@ router.get("/owner/history", async (req, res) =>
     ).rows,
   }),
 );
-router.get("/owner/orders", async (req, res) =>
+router.get("/owner/summary", async (req, res) => {
+  const [inventory, orderStats, alerts] = await Promise.all([
+    db.query(
+      `SELECT count(*)::int AS "activeProducts",
+        count(*) FILTER (WHERE ${catalogStock})::int AS "lowProducts"
+        FROM products p JOIN inventory i ON i.product_id=p.id
+        WHERE p.store_id=$1 AND NOT p.archived`,
+      [req.store.id],
+    ),
+    db.query(
+      `SELECT count(*) FILTER (WHERE status='placed')::int AS "newOrders",
+        COALESCE(sum(total_amount) FILTER (WHERE status<>'cancelled'
+          AND created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'), 0) AS "sales"
+        FROM orders WHERE store_id=$1`,
+      [req.store.id],
+    ),
+    db.query(
+      `SELECT p.id,p.name,i.quantity FROM products p JOIN inventory i ON i.product_id=p.id
+        WHERE p.store_id=$1 AND (${catalogStock}) ORDER BY i.updated_at DESC,p.id DESC LIMIT 20`,
+      [req.store.id],
+    ),
+  ]);
   res.json({
-    orders: (
-      await db.query(
-        `SELECT o.id,o.status,o.created_at,o.total_amount,u.name AS buyer FROM orders o JOIN users u ON u.id=o.user_id WHERE o.store_id=$1 ORDER BY o.id DESC`,
-        [req.store.id],
-      )
-    ).rows,
-  }),
-);
+    ...inventory.rows[0],
+    ...orderStats.rows[0],
+    alerts: alerts.rows,
+  });
+});
+router.get("/owner/orders", async (req, res) => {
+  const search = text(req.query.q ?? "", 32, false);
+  const status = text(req.query.status ?? "", 20, false);
+  if (
+    status &&
+    !["placed", "processing", "completed", "cancelled"].includes(status)
+  )
+    fail("Invalid fulfillment status.");
+  const date = text(req.query.date ?? "", 10, false);
+  const parsedDate = new Date(date + "T00:00:00.000Z");
+  if (
+    date &&
+    (!Number.isFinite(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 10) !== date)
+  )
+    fail("Invalid order date.");
+  const utcOffset = Number(req.query.utcOffset ?? 0);
+  if (!Number.isInteger(utcOffset) || Math.abs(utcOffset) > 840)
+    fail("Invalid time zone offset.");
+  const endOffset = Number(req.query.endOffset ?? utcOffset);
+  if (!Number.isInteger(endOffset) || Math.abs(endOffset) > 840)
+    fail("Invalid time zone offset.");
+  const { rows: orders, pagination: paging } = await pageRows(
+    db,
+    `SELECT o.id,o.status,o.created_at,o.total_amount,u.name AS buyer
+      FROM orders o JOIN users u ON u.id=o.user_id
+      WHERE o.store_id=$1 AND strpos(o.id::text, $2) > 0 AND ($3 = '' OR o.status=$3)
+        AND ($4::date IS NULL OR (
+          o.created_at >= ($4::timestamp AT TIME ZONE 'UTC') + make_interval(mins => $5)
+          AND o.created_at < (($4::date + 1)::timestamp AT TIME ZONE 'UTC') + make_interval(mins => $6)
+        ))
+      ORDER BY o.created_at DESC,o.id DESC`,
+    [req.store.id, search, status, date || null, utcOffset, endOffset],
+    pagination(req.query),
+  );
+  res.json({ orders, pagination: paging });
+});
 router.get("/owner/orders/:id", async (req, res) => {
   const order = (
     await db.query(
@@ -432,8 +554,14 @@ router.patch("/owner/orders/:id", async (req, res) => {
   ];
   if (typeof previous !== "string") fail("Invalid fulfillment status.");
   const r = await db.query(
-    "UPDATE orders SET status=$1,updated_at=NOW() WHERE id=$2 AND store_id=$3 AND status=$4 RETURNING id",
-    [req.body.status, req.params.id, req.store.id, previous],
+    "UPDATE orders SET status=$1,updated_at=NOW() WHERE id=$2 AND store_id=$3 AND status=$4 RETURNING id, pg_notify('market_inventory', json_build_object('owner',$5::text,'public',false)::text)",
+    [
+      req.body.status,
+      req.params.id,
+      req.store.id,
+      previous,
+      String(req.user.id),
+    ],
   );
   if (!r.rowCount) fail("Order unavailable or status already changed.", 409);
   res.sendStatus(204);

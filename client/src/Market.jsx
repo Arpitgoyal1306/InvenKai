@@ -1,4 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   Link,
   NavLink,
@@ -6,11 +12,7 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
-import {
-  keepPreviousData,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Store,
   Bell,
@@ -32,20 +34,60 @@ import {
   MapPin,
 } from "lucide-react";
 import { api, amount, dateTime, useData } from "./api";
-import { Brand, State, Modal, Table } from "./ui";
+import { Brand, State, Modal, Pager, Table } from "./ui";
 import { useMarketLive } from "./useMarketLive";
 import { addressFields } from "./Account";
-import { isLowStock } from "./stockAlerts";
 import { Receipt } from "./Operations";
 
-export function useMarket(path, keepResults = false) {
+const MarketLive = createContext(false);
+
+export function useMarket(path, keepResults = false, enabled = true) {
+  const live = useContext(MarketLive);
+  // Buyer fulfillment and receipts do not use the catalog stream.
+  const streamed =
+    path.startsWith("/market/stores") || path.startsWith("/market/owner");
   return useQuery({
     queryKey: [path],
     queryFn: ({ signal }) => api(path, { signal }),
-    refetchInterval: 8000,
-    placeholderData: keepResults ? keepPreviousData : undefined,
+    enabled,
+    refetchInterval: live && streamed ? false : 8000,
+    placeholderData: keepResults
+      ? (previous, query) =>
+          query?.queryKey[0].split("?")[0] === path.split("?")[0]
+            ? previous
+            : undefined
+      : undefined,
   });
 }
+
+const pageSize = 20;
+export function useMarketPage(path, filters = {}) {
+  const params = new URLSearchParams(
+    Object.entries(filters).filter(
+      ([, value]) => value !== "" && value != null,
+    ),
+  );
+  const key = path + "?" + params;
+  const [selection, select] = useState(null);
+  const page = selection?.key === key ? selection.page : 1;
+  params.set("limit", pageSize);
+  params.set("offset", (page - 1) * pageSize);
+  const query = useMarket(path + "?" + params, true);
+  return { query, page, setPage: (number) => select({ key, page: number }) };
+}
+
+export function MarketPager({ listing }) {
+  const { query, page, setPage } = listing;
+  const hasMore = query.data?.pagination?.hasMore;
+  return page > 1 || hasMore ? (
+    <Pager
+      page={page}
+      setPage={setPage}
+      next={hasMore && !query.isPlaceholderData}
+    />
+  ) : null;
+}
+
 export function useAction() {
   const client = useQueryClient(),
     [busy, setBusy] = useState(false),
@@ -92,15 +134,16 @@ function AccountAvatar({ url }) {
 }
 
 function StockAlerts() {
-  const query = useMarket("/market/owner/products");
+  const query = useMarket("/market/owner/summary");
   const [notice, setNotice] = useState([]);
   const previous = useRef(null);
-  const products = query.data?.products;
-  const alerts = (products || []).filter(isLowStock);
+  const products = query.data?.alerts;
+  const alerts = products || [];
+  const total = query.data?.lowProducts || 0;
 
   useEffect(() => {
     if (!products) return;
-    const low = products.filter(isLowStock);
+    const low = products;
     const current = new Set(low.map((product) => product.id));
     const added = previous.current
       ? low.filter((product) => !previous.current.has(product.id))
@@ -116,11 +159,11 @@ function StockAlerts() {
     <>
       <details className="account stock-alerts">
         <summary
-          aria-label={`Stock alerts, ${alerts.length} ${alerts.length === 1 ? "product" : "products"}`}
+          aria-label={`Stock alerts, ${total} ${total === 1 ? "product" : "products"}`}
         >
           <Bell size={19} />
           {!!alerts.length && (
-            <span className="stock-alert-count">{alerts.length}</span>
+            <span className="stock-alert-count">{total}</span>
           )}
         </summary>
         <div>
@@ -173,7 +216,7 @@ export function MarketShell({ user, logout, children }) {
   const loc = useLocation(),
     nav = useNavigate(),
     owner = loc.pathname.startsWith("/owner");
-  useMarketLive(owner, user?.id);
+  const live = useMarketLive(owner, user?.id);
   const [cart, setCart] = useState(loadCart);
   useEffect(() => {
     const refreshCart = () => setCart(loadCart());
@@ -199,79 +242,81 @@ export function MarketShell({ user, logout, children }) {
         ["/buyer/orders", "My orders", ReceiptText],
       ];
   return (
-    <div className={owner ? "market market-owner" : "market"}>
-      <header className="market-head">
-        <Link to="/" aria-label="InvenKai home">
-          <Brand compact />
-        </Link>
-        <nav aria-label={owner ? "Store navigation" : "Shopping navigation"}>
-          {links.map(([url, label, Icon]) => (
-            <NavLink end key={url} to={url}>
-              {Icon && <Icon size={17} aria-hidden="true" />}
-              {label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="market-head-actions">
-          {owner && user && <StockAlerts key={user.id} />}
-          {!owner && (
-            <Link
-              className="header-cart"
-              to="/cart"
-              aria-label={`View cart, ${itemCount} ${itemCount === 1 ? "item" : "items"}`}
-            >
-              <ShoppingBag size={19} />{" "}
-              {itemCount > 0 && <span>{itemCount}</span>}
-            </Link>
-          )}
-          <details key={loc.pathname} className="account">
-            <summary aria-label="Account menu">
-              <AccountAvatar key={user?.avatar_url} url={user?.avatar_url} />
-            </summary>
-            <div>
-              {user && (
-                <>
-                  <section className="account-card">
-                    <AccountAvatar
-                      key={user.avatar_url}
-                      url={user.avatar_url}
-                    />
-                    <div>
-                      <strong>{user.name}</strong>
-                      <small>{user.email}</small>
-                    </div>
-                  </section>
-                  <Link to="/account/settings">
-                    <Settings size={17} /> Account settings
-                  </Link>
-                </>
-              )}
-              <Link to={owner ? "/explore" : "/owner"}>
-                {owner ? "Shop as a buyer" : "Manage my store"}
+    <MarketLive.Provider value={live}>
+      <div className={owner ? "market market-owner" : "market"}>
+        <header className="market-head">
+          <Link to="/" aria-label="InvenKai home">
+            <Brand compact />
+          </Link>
+          <nav aria-label={owner ? "Store navigation" : "Shopping navigation"}>
+            {links.map(([url, label, Icon]) => (
+              <NavLink end key={url} to={url}>
+                {Icon && <Icon size={17} aria-hidden="true" />}
+                {label}
+              </NavLink>
+            ))}
+          </nav>
+          <div className="market-head-actions">
+            {owner && user && <StockAlerts key={user.id} />}
+            {!owner && (
+              <Link
+                className="header-cart"
+                to="/cart"
+                aria-label={`View cart, ${itemCount} ${itemCount === 1 ? "item" : "items"}`}
+              >
+                <ShoppingBag size={19} />{" "}
+                {itemCount > 0 && <span>{itemCount}</span>}
               </Link>
-              {["admin", "inventory_manager"].includes(user?.role) && (
-                <Link to="/overview">Platform workspace</Link>
-              )}
-              {user ? (
-                <button
-                  onClick={() => {
-                    logout();
-                    nav("/");
-                  }}
-                >
-                  <LogOut size={17} /> Sign out
-                </button>
-              ) : (
-                <Link to={"/login?next=" + encodeURIComponent(loc.pathname)}>
-                  Sign in
+            )}
+            <details key={loc.pathname} className="account">
+              <summary aria-label="Account menu">
+                <AccountAvatar key={user?.avatar_url} url={user?.avatar_url} />
+              </summary>
+              <div>
+                {user && (
+                  <>
+                    <section className="account-card">
+                      <AccountAvatar
+                        key={user.avatar_url}
+                        url={user.avatar_url}
+                      />
+                      <div>
+                        <strong>{user.name}</strong>
+                        <small>{user.email}</small>
+                      </div>
+                    </section>
+                    <Link to="/account/settings">
+                      <Settings size={17} /> Account settings
+                    </Link>
+                  </>
+                )}
+                <Link to={owner ? "/explore" : "/owner"}>
+                  {owner ? "Shop as a buyer" : "Manage my store"}
                 </Link>
-              )}
-            </div>
-          </details>
-        </div>
-      </header>
-      <main className="market-main">{children}</main>
-    </div>
+                {["admin", "inventory_manager"].includes(user?.role) && (
+                  <Link to="/overview">Platform workspace</Link>
+                )}
+                {user ? (
+                  <button
+                    onClick={() => {
+                      logout();
+                      nav("/");
+                    }}
+                  >
+                    <LogOut size={17} /> Sign out
+                  </button>
+                ) : (
+                  <Link to={"/login?next=" + encodeURIComponent(loc.pathname)}>
+                    Sign in
+                  </Link>
+                )}
+              </div>
+            </details>
+          </div>
+        </header>
+        <main className="market-main">{children}</main>
+      </div>
+    </MarketLive.Provider>
   );
 }
 export function Photo({ src, name, store = false }) {
@@ -337,12 +382,6 @@ export function Filters({
     </div>
   );
 }
-export function matches(x, search, category) {
-  return (
-    x.name.toLowerCase().includes(search.trim().toLowerCase()) &&
-    (!category || x.category === category)
-  );
-}
 export function Explore() {
   const [search, S] = useState("");
   const [cat, C] = useState("");
@@ -351,13 +390,8 @@ export function Explore() {
     const timer = setTimeout(() => setTerm(search.trim()), 200);
     return () => clearTimeout(timer);
   }, [search]);
-  const params = new URLSearchParams();
-  if (term) params.set("q", term);
-  if (cat) params.set("category", cat);
-  const q = useMarket(
-    "/market/stores" + (params.size ? "?" + params : ""),
-    true,
-  );
+  const listing = useMarketPage("/market/stores", { q: term, category: cat });
+  const q = listing.query;
   const shown = q.data?.stores || [];
   return (
     <>
@@ -443,13 +477,23 @@ export function Explore() {
           ))}
         </div>
       </State>
+      <MarketPager listing={listing} />
     </>
   );
 }
-export function Catalog({ store, products, onAdd, cartItems = [], children }) {
-  const [search, S] = useState(""),
-    [cat, C] = useState(""),
-    shown = products.filter((p) => !p.archived && matches(p, search, cat));
+export function Catalog({
+  store,
+  listing,
+  search,
+  setSearch,
+  category,
+  setCategory,
+  onAdd,
+  cartItems = [],
+  children,
+}) {
+  const query = listing.query;
+  const shown = query.data?.products || [];
   return (
     <>
       <section
@@ -479,56 +523,64 @@ export function Catalog({ store, products, onAdd, cartItems = [], children }) {
       <div className={children ? "store-shopping" : ""}>
         <div className="store-products">
           <Filters
-            list={products.filter((p) => !p.archived)}
+            categories={query.data?.categories || []}
             search={search}
-            setSearch={S}
-            category={cat}
-            setCategory={C}
+            setSearch={setSearch}
+            category={category}
+            setCategory={setCategory}
             label="Search products"
           />
-          {!shown.length && <p className="state">No products to show.</p>}
-          <div className="market-grid product-grid">
-            {shown.map((p) => (
-              <article className="market-card" key={p.id}>
-                <Photo src={p.photo} name={p.name} />
-                <div>
-                  <small>{p.category}</small>
-                  <h2>{p.name}</h2>
-                  <p>{p.description}</p>
-                  <div className="product-price">
-                    <strong>{amount(p.price)}</strong>
-                    <small
-                      className={
-                        p.quantity ? "stock-available" : "stock-unavailable"
-                      }
-                    >
-                      {p.quantity ? p.quantity + " available" : "Out of stock"}
-                    </small>
-                  </div>
-                  {onAdd && (
-                    <button
-                      disabled={
-                        !p.quantity ||
-                        cartItems.some(
+          <State
+            query={query}
+            empty={!shown.length}
+            message="No products to show."
+          >
+            <div className="market-grid product-grid">
+              {shown.map((p) => (
+                <article className="market-card" key={p.id}>
+                  <Photo src={p.photo} name={p.name} />
+                  <div>
+                    <small>{p.category}</small>
+                    <h2>{p.name}</h2>
+                    <p>{p.description}</p>
+                    <div className="product-price">
+                      <strong>{amount(p.price)}</strong>
+                      <small
+                        className={
+                          p.quantity ? "stock-available" : "stock-unavailable"
+                        }
+                      >
+                        {p.quantity
+                          ? p.quantity + " available"
+                          : "Out of stock"}
+                      </small>
+                    </div>
+                    {onAdd && (
+                      <button
+                        disabled={
+                          !p.quantity ||
+                          cartItems.some(
+                            (item) =>
+                              item.id === p.id && item.quantity >= p.quantity,
+                          )
+                        }
+                        onClick={() => onAdd(p)}
+                      >
+                        <ShoppingBag size={16} />{" "}
+                        {cartItems.some(
                           (item) =>
                             item.id === p.id && item.quantity >= p.quantity,
                         )
-                      }
-                      onClick={() => onAdd(p)}
-                    >
-                      <ShoppingBag size={16} />{" "}
-                      {cartItems.some(
-                        (item) =>
-                          item.id === p.id && item.quantity >= p.quantity,
-                      )
-                        ? "All available in cart"
-                        : "Add to cart"}
-                    </button>
-                  )}
-                </div>
-              </article>
-            ))}
-          </div>
+                          ? "All available in cart"
+                          : "Add to cart"}
+                      </button>
+                    )}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </State>
+          <MarketPager listing={listing} />
         </div>
         {children}
       </div>
@@ -554,8 +606,12 @@ export function Storefront({ user, cartSlug }) {
   const { slug: routeSlug } = useParams();
   const slug = cartSlug || routeSlug;
   const profile = useData("/auth/profile", Boolean(user && cartSlug));
-  const q = useMarket("/market/stores/" + encodeURIComponent(slug)),
-    nav = useNavigate();
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("");
+  const path = "/market/stores/" + encodeURIComponent(slug);
+  const listing = useMarketPage(path, { q: search.trim(), category });
+  const q = listing.query;
+  const nav = useNavigate();
   const [cart, setCart] = useState(loadCart),
     [notice, N] = useState(""),
     [checkoutOpen, setCheckoutOpen] = useState(false),
@@ -567,8 +623,14 @@ export function Storefront({ user, cartSlug }) {
     if (loaded && hash === "#cart")
       document.getElementById("cart")?.scrollIntoView();
   }, [hash, loaded, slug]);
-  const own = cart.slug === slug ? cart.items : [],
-    products = q.data?.products || [];
+  const own = cart.slug === slug ? cart.items : [];
+  const ids = own
+    .map((item) => item.id)
+    .sort()
+    .join(",");
+  const cartQuote = useMarket(path + "/cart-products?ids=" + ids, false, !!ids);
+  const products = cartQuote.data?.products || [];
+  const quoteUnavailable = !!ids && (cartQuote.isPending || cartQuote.isError);
   function save(items) {
     const next = { slug, name: q.data.store.name, items };
     sessionStorage.setItem(cartKey, JSON.stringify(next));
@@ -589,6 +651,10 @@ export function Storefront({ user, cartSlug }) {
     )
       return;
     const existing = own.find((i) => i.id === p.id);
+    if (!existing && own.length >= 50) {
+      N("Your cart can contain up to 50 different products.");
+      return;
+    }
     if (existing?.quantity >= p.quantity) {
       N("All available units are already in your cart.");
       return;
@@ -605,7 +671,7 @@ export function Storefront({ user, cartSlug }) {
   async function checkout(event) {
     event.preventDefault();
     const buyerDetails = Object.fromEntries(new FormData(event.currentTarget));
-    if (!user || busy) return;
+    if (!user || busy || quoteUnavailable) return;
     const body = {
       buyerDetails,
       items: own.map((item) => ({
@@ -616,7 +682,9 @@ export function Storefront({ user, cartSlug }) {
     };
     const signature = JSON.stringify([slug, body]);
     if (review && checkoutRequest.current?.signature !== signature) {
-      setMessage("Review the current price and stock before placing a different order.");
+      setMessage(
+        "Review the current price and stock before placing a different order.",
+      );
       return;
     }
     if (checkoutRequest.current?.signature !== signature) {
@@ -640,10 +708,14 @@ export function Storefront({ user, cartSlug }) {
   const total = amount(
     own.reduce((sum, item) => sum + item.price * item.quantity, 0),
   );
-  const review = own.some((i) => {
-    const p = products.find((p) => p.id === i.id);
-    return !p || p.quantity < i.quantity || Number(p.price) !== Number(i.price);
-  });
+  const review =
+    !quoteUnavailable &&
+    own.some((i) => {
+      const p = products.find((p) => p.id === i.id);
+      return (
+        !p || p.quantity < i.quantity || Number(p.price) !== Number(i.price)
+      );
+    });
   function openCheckout() {
     if (user) setCheckoutOpen(true);
     else nav("/login?next=" + encodeURIComponent("/cart"));
@@ -755,6 +827,13 @@ export function Storefront({ user, cartSlug }) {
                 {q.data.store.pickup}
               </p>
             </div>
+            {quoteUnavailable && (
+              <p role="status">
+                {cartQuote.isError
+                  ? "Could not check your cart. Try refreshing."
+                  : "Checking cart availability…"}
+              </p>
+            )}
             {review && (
               <p role="status">
                 Review the price and available stock for the items above.
@@ -764,7 +843,10 @@ export function Storefront({ user, cartSlug }) {
               type="button"
               className="primary cart-continue"
               disabled={
-                busy || review || Boolean(cartSlug && user && profile.isLoading)
+                busy ||
+                review ||
+                quoteUnavailable ||
+                Boolean(cartSlug && user && profile.isLoading)
               }
               onClick={cartSlug ? openCheckout : () => nav("/cart")}
             >
@@ -833,7 +915,11 @@ export function Storefront({ user, cartSlug }) {
                 </p>
                 <button
                   className="primary"
-                  disabled={busy || (review && !checkoutRequest.current)}
+                  disabled={
+                    busy ||
+                    quoteUnavailable ||
+                    (review && !checkoutRequest.current)
+                  }
                 >
                   {busy
                     ? "Placing order…"
@@ -898,7 +984,11 @@ export function Storefront({ user, cartSlug }) {
             </Link>
             <Catalog
               store={q.data.store}
-              products={products}
+              listing={listing}
+              search={search}
+              setSearch={setSearch}
+              category={category}
+              setCategory={setCategory}
               onAdd={add}
               cartItems={own}
             >
@@ -1010,7 +1100,8 @@ export function OrderDetail({ order, owner, close }) {
 }
 export function Purchases() {
   const { state } = useLocation();
-  const q = useMarket("/market/purchases"),
+  const listing = useMarketPage("/market/purchases");
+  const q = listing.query,
     orders = q.data?.orders || [],
     [selected, S] = useState(null);
   return (
@@ -1046,6 +1137,7 @@ export function Purchases() {
           </section>
         ))}
       </State>
+      <MarketPager listing={listing} />
       {selected && <OrderDetail order={selected} close={() => S(null)} />}
     </>
   );

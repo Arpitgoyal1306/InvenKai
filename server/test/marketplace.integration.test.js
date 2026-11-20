@@ -86,9 +86,8 @@ test("store publication, private inventory and fulfillment stay scoped to their 
     await call("post", "/market/owner/products/" + id + "/stock", b, {
       delta: 2,
     }).expect(404);
-    await call("get", "/market/owner/products", b).expect(200, {
-      products: [],
-    });
+    const empty = await call("get", "/market/owner/products", b).expect(200);
+    assert.deepEqual(empty.body.products, []);
     await call("put", "/market/owner/publication", a, {
       published: true,
     }).expect(200);
@@ -211,12 +210,227 @@ test("store publication, private inventory and fulfillment stay scoped to their 
       buyerDetails,
     );
     await call("get", detail, b).expect(404);
-    await call("get", "/market/purchases", b).expect(200, { orders: [] });
+    assert.deepEqual(
+      (await call("get", "/market/purchases", b).expect(200)).body.orders,
+      [],
+    );
     await call("patch", detail, a, { status: "processing" }).expect(204);
     assert.equal(
       (await call("get", "/market/purchases", buyer)).body.orders[0].status,
       "processing",
     );
+    for (const [offset, expected, hasMore] of [
+      [0, "a", true],
+      [1, "b", false],
+    ]) {
+      const page = (
+        await call("get", searchPath + `&limit=1&offset=${offset}`).expect(200)
+      ).body;
+      assert.deepEqual(
+        page.stores.map((s) => s.slug),
+        [expected + key],
+      );
+      assert.deepEqual(page.pagination, { limit: 1, offset, hasMore });
+    }
+    const ownerProducts = (
+      await call("get", "/market/owner/products?limit=1&offset=1", a).expect(
+        200,
+      )
+    ).body;
+    assert.deepEqual(
+      ownerProducts.products.map((p) => p.id),
+      [id],
+    );
+    assert.equal(ownerProducts.pagination.hasMore, false);
+    const filteredProducts = (
+      await call("get", store + "?q=CUP&limit=1").expect(200)
+    ).body;
+    assert.deepEqual(
+      filteredProducts.products.map((p) => p.id),
+      [id],
+    );
+    const quote = (
+      await call(
+        "get",
+        store + `/cart-products?ids=${id},${secondProduct},${archived}`,
+      ).expect(200)
+    ).body;
+    assert.deepEqual(
+      quote.products.map((p) => [p.id, p.quantity]),
+      [[id, 0]],
+    );
+    const ownerOrders = await call(
+      "get",
+      `/market/owner/orders?limit=1&q=${orders[0].id}&status=processing`,
+      a,
+    ).expect(200);
+    assert.deepEqual(
+      ownerOrders.body.orders.map((o) => o.id),
+      [orders[0].id],
+    );
+    const filteredDay = new Date().toISOString().slice(0, 10);
+    const dated = await call(
+      "get",
+      "/market/owner/orders?date=" + filteredDay,
+      a,
+    ).expect(200);
+    assert.deepEqual(
+      dated.body.orders.map((o) => o.id),
+      [orders[0].id],
+    );
+    for (const [path, token] of [
+      ["/market/owner/orders", a],
+      ["/market/purchases", buyer],
+    ]) {
+      const page = await call("get", path + "?limit=1&offset=1", token).expect(
+        200,
+      );
+      assert.deepEqual(page.body.orders, []);
+      assert.equal(page.body.pagination.hasMore, false);
+      await call("get", path + "?limit=101", token).expect(400);
+    }
+    const summary = (await call("get", "/market/owner/summary", a).expect(200))
+      .body;
+    assert.equal(summary.lowProducts, 1);
+    assert.equal(summary.activeProducts, 1);
+    assert.equal(summary.newOrders, 0);
+    assert.equal(Number(summary.sales), 10);
+
+    await t.test(
+      "warehouse stock, suppliers and reports stay separate from seller inventory",
+      async () => {
+        await call(
+          "post",
+          "/market/owner/products/" + secondProduct + "/stock",
+          b,
+          { delta: 4 },
+        ).expect(204);
+        const staffId = (
+          await query(
+            "INSERT INTO users(name,email,password_hash,role) VALUES('Warehouse Staff',$1,'test','inventory_manager') RETURNING id",
+            [key + "@example.test"],
+          )
+        ).rows[0].id;
+        const staff =
+          "Bearer " +
+          jwt.sign(
+            { sub: staffId, role: "inventory_manager" },
+            process.env.JWT_SECRET,
+          );
+        const categoryId = (
+          await query("SELECT id FROM categories WHERE name=$1", [key])
+        ).rows[0].id;
+        const stockBefore = (
+          await call("get", "/reports/stock-summary", staff).expect(200)
+        ).body;
+        const movementPath =
+          "/reports/stock-movement?startDate=" +
+          filteredDay +
+          "&endDate=" +
+          filteredDay;
+        const movementBefore = (
+          await call("get", movementPath, staff).expect(200)
+        ).body;
+        const central = (
+          await call("post", "/products", staff, {
+            category_id: categoryId,
+            name: "Warehouse cup",
+            sku: key,
+            price: 10,
+            low_stock_threshold: 5,
+          }).expect(201)
+        ).body.product.id;
+        await call("patch", "/inventory/" + id + "/increase", staff, {
+          quantity: 3,
+        }).expect(404);
+        await call(
+          "patch",
+          "/inventory/" + secondProduct + "/decrease",
+          staff,
+          { quantity: 1 },
+        ).expect(409);
+        await call("get", "/inventory/" + id, staff).expect(404);
+        const sellerStock = (
+          await query("SELECT quantity FROM inventory WHERE product_id=$1", [
+            secondProduct,
+          ])
+        ).rows[0];
+        assert.equal(sellerStock.quantity, 4);
+        await call("patch", "/inventory/" + central + "/increase", staff, {
+          quantity: 3,
+        }).expect(200);
+        const stock = (
+          await call("get", "/reports/stock-summary", staff).expect(200)
+        ).body;
+        assert.equal(stock.product_count, stockBefore.product_count + 1);
+        assert.equal(
+          stock.total_stock_quantity,
+          stockBefore.total_stock_quantity + 3,
+        );
+        const category = (
+          await call(
+            "get",
+            "/reports/category-stock?categoryId=" + categoryId,
+            staff,
+          ).expect(200)
+        ).body.categories[0];
+        assert.equal(category.product_count, 1);
+        assert.equal(category.total_stock_quantity, 3);
+        const low = (await call("get", "/reports/low-stock", staff).expect(200))
+          .body;
+        assert.ok(low.products.some((p) => p.product_id === central));
+        assert.ok(
+          !low.products.some(
+            (p) => p.product_id === id || p.product_id === archived,
+          ),
+        );
+        const history = (
+          await call("get", "/inventory/history?productId=" + id, staff).expect(
+            200,
+          )
+        ).body;
+        assert.deepEqual(history.transactions, []);
+        const movement = (await call("get", movementPath, staff).expect(200))
+          .body;
+        assert.equal(movement.total_added, movementBefore.total_added + 3);
+        assert.equal(movement.total_removed, movementBefore.total_removed);
+        const supplierId = (
+          await query(
+            "INSERT INTO suppliers(name,email) VALUES($1,$2) RETURNING id",
+            [key, key + "@supplier.example.test"],
+          )
+        ).rows[0].id;
+        const association = "/suppliers/" + supplierId + "/products";
+        await call("put", association + "/" + secondProduct, staff).expect(404);
+        await call("put", association + "/" + central, staff).expect(204);
+        await call("put", association + "/" + central, staff).expect(204);
+        const linked = await call(
+          "get",
+          association + "?linked=true",
+          staff,
+        ).expect(200);
+        assert.deepEqual(
+          linked.body.products.map((p) => p.id),
+          [central],
+        );
+
+        await query("UPDATE products SET archived=true WHERE id=$1", [central]);
+        await call("get", "/inventory/" + central, staff).expect(404);
+        const archivedHistory = await call(
+          "get",
+          "/inventory/history?productId=" + central,
+          staff,
+        ).expect(200);
+        assert.equal(archivedHistory.body.transactions.length, 1);
+        const archivedSummary = await call(
+          "get",
+          "/reports/stock-summary",
+          staff,
+        ).expect(200);
+        assert.deepEqual(archivedSummary.body, stockBefore);
+      },
+    );
+
     await call("get", "/reports/stock-summary", b).expect(403);
     await call("post", "/auth/ws-ticket", b, {}).expect(403);
   } finally {
