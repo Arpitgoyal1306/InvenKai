@@ -1,6 +1,6 @@
 import { Link, useSearchParams } from "react-router-dom";
 import { Receipt, SupplierCatalog } from "./Operations";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Boxes,
@@ -15,8 +15,8 @@ import { State, Pager, Table, ActionForm, Field, Modal } from "./ui";
 const size = 20;
 function useWrite() {
   const client = useQueryClient();
-  return async (path, method, body) => {
-    const result = await api(path, { method, body });
+  return async (path, method, body, idempotencyKey) => {
+    const result = await api(path, { method, body, idempotencyKey });
     await client.invalidateQueries();
     return result;
   };
@@ -25,7 +25,7 @@ function saveRecord(write, path, original, fields) {
   if (!original.id) return write(path, "POST", fields);
   const changed = Object.entries(fields).filter(([key, value]) => {
     if (key === "price") return Number(original.price) !== value;
-    return String(original[key] ?? "") !== String(value);
+    return String(original[key] ?? "") !== String(value ?? "");
   });
   if (changed.length)
     return write(
@@ -114,12 +114,10 @@ export function Overview({ reports = false }) {
             >
               <Table
                 heads={["Product", "On hand", "Threshold"]}
-                rows={(low.data?.products || [])
-                  .slice(0, 5)
-                  .map((p) => ({
-                    key: p.product_id,
-                    cells: [p.name, p.quantity, p.low_stock_threshold],
-                  }))}
+                rows={(low.data?.products || []).slice(0, 5).map((p) => ({
+                  key: p.product_id,
+                  cells: [p.name, p.quantity, p.low_stock_threshold],
+                }))}
               />
             </State>
           </section>
@@ -251,7 +249,7 @@ export function Products({ staff, admin, canOrder, addToCart }) {
     [modal, setModal] = useState(null),
     [notice, setNotice] = useState("");
   const q = useData(`/products?limit=${size}&offset=${(page - 1) * size}`),
-    cats = useData("/reports/category-stock", staff);
+    cats = useData("/categories", staff);
   const rows = q.data?.products || [],
     write = useWrite(),
     item = modal?.item || {};
@@ -330,7 +328,7 @@ export function Products({ staff, admin, canOrder, addToCart }) {
                     <button
                       onClick={() => setModal({ type: "delete", item: p })}
                     >
-                      Delete
+                      Archive
                     </button>
                   )}
                 </div>,
@@ -338,7 +336,15 @@ export function Products({ staff, admin, canOrder, addToCart }) {
             }))}
           />
         </State>
-        <Pager page={page} setPage={setPage} next={rows.length === size} />
+        <Pager
+          page={page}
+          setPage={setPage}
+          next={
+            q.data?.pagination?.total != null
+              ? page * size < q.data.pagination.total
+              : rows.length === size
+          }
+        />
       </section>
       {modal?.type === "detail" && (
         <RecordDetails
@@ -372,6 +378,10 @@ export function Products({ staff, admin, canOrder, addToCart }) {
             saveRecord(write, "/products", item, {
               ...f,
               price: Number(f.price),
+              low_stock_threshold:
+                f.low_stock_threshold === ""
+                  ? null
+                  : Number(f.low_stock_threshold),
             })
           }
         >
@@ -401,8 +411,8 @@ export function Products({ staff, admin, canOrder, addToCart }) {
                 Select category
               </option>
               {(cats.data?.categories || []).map((c) => (
-                <option value={c.category_id} key={c.category_id}>
-                  {c.category_name}
+                <option value={c.id} key={c.id}>
+                  {c.name}
                 </option>
               ))}
             </select>
@@ -423,6 +433,14 @@ export function Products({ staff, admin, canOrder, addToCart }) {
             defaultValue={item.price}
           />
           <Field
+            label="Low-stock threshold"
+            name="low_stock_threshold"
+            type="number"
+            min="0"
+            max="2147483647"
+            defaultValue={item.low_stock_threshold ?? ""}
+          />
+          <Field
             label="Description"
             name="description"
             defaultValue={item.description || ""}
@@ -431,14 +449,14 @@ export function Products({ staff, admin, canOrder, addToCart }) {
       )}
       {modal?.type === "delete" && (
         <ActionForm
-          title="Delete product"
+          title="Archive product"
           close={close}
-          submitLabel="Delete product"
+          submitLabel="Archive product"
           onSubmit={() => write("/products/" + item.id, "DELETE")}
         >
           <p>
-            Delete {item.name}? Products linked to inventory or transaction
-            records are protected.
+            Archive {item.name}? Its inventory and order history will remain
+            available.
           </p>
         </ActionForm>
       )}
@@ -457,7 +475,7 @@ export function Inventory() {
     [item, setItem] = useState(null);
   const write = useWrite();
   const products = useData(
-    `/products?limit=${size}&offset=${(page - 1) * size}`,
+    `/inventory?limit=${size}&offset=${(page - 1) * size}`,
     tab === "Stock levels",
   );
   const low = useData("/inventory/low-stock", tab === "Low stock");
@@ -557,7 +575,7 @@ export function Inventory() {
                 : [
                     r.name,
                     <code>{r.sku}</code>,
-                    isLow ? r.quantity : <Stock id={r.id} />,
+                    r.quantity,
                     <div className="actions">
                       {isLow && <strong>{r.low_stock_threshold}</strong>}
                       <button
@@ -580,7 +598,15 @@ export function Inventory() {
           />
         </State>
         {!isLow && (
-          <Pager page={page} setPage={setPage} next={rows.length === size} />
+          <Pager
+            page={page}
+            setPage={setPage}
+            next={
+              q.data?.pagination?.total != null
+                ? page * size < q.data.pagination.total
+                : rows.length === size
+            }
+          />
         )}
       </section>
       {threshold && (
@@ -706,7 +732,15 @@ export function Suppliers({ admin }) {
             }))}
           />
         </State>
-        <Pager page={page} setPage={setPage} next={rows.length === size} />
+        <Pager
+          page={page}
+          setPage={setPage}
+          next={
+            q.data?.pagination?.total != null
+              ? page * size < q.data.pagination.total
+              : rows.length === size
+          }
+        />
       </section>
       {modal?.type === "catalog" && (
         <SupplierCatalog supplier={item} close={close} />
@@ -776,6 +810,7 @@ export function Suppliers({ admin }) {
 }
 
 export function Orders({ cart, setCart, canOrder }) {
+  const checkoutRequest = useRef(null);
   const [page, setPage] = useState(1),
     [detail, setDetail] = useState(null),
     [checkout, setCheckout] = useState(false);
@@ -871,12 +906,23 @@ export function Orders({ cart, setCart, canOrder }) {
           close={() => setCheckout(false)}
           submitLabel="Place order"
           onSubmit={async () => {
-            const { order } = await write("/orders", "POST", {
+            const body = {
               items: cart.map((i) => ({
                 productId: String(i.id),
                 quantity: i.quantity,
               })),
-            });
+            };
+            const signature = JSON.stringify(body);
+            if (checkoutRequest.current?.signature !== signature) {
+              checkoutRequest.current = { signature, key: crypto.randomUUID() };
+            }
+            const { order } = await write(
+              "/orders",
+              "POST",
+              body,
+              checkoutRequest.current.key,
+            );
+            checkoutRequest.current = null;
             setCart([]);
             setPage(1);
             setDetail(order.id);

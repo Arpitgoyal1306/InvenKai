@@ -5,6 +5,7 @@ const authorize = require("../middleware/authorize-roles");
 const {
   validateProductId,
   validateProductPagination,
+  updateProduct,
 } = require("../services/product.service");
 const {
   invalidateProductCatalog,
@@ -19,6 +20,13 @@ const {
 const router = express.Router();
 const staff = [authenticate, authorize("admin", "inventory_manager")];
 const admin = [authenticate, authorize("admin")];
+
+router.get("/categories", ...staff, async (_req, res) => {
+  const { rows } = await pool.query(
+    "SELECT id,name FROM categories ORDER BY name,id",
+  );
+  res.json({ categories: rows });
+});
 
 router.post("/categories", ...staff, async (req, res) => {
   const name = req.body?.name;
@@ -47,14 +55,17 @@ router.patch("/products/:id/threshold", ...staff, async (req, res) => {
       .status(400)
       .json({ message: "Enter a nonnegative integer or clear the threshold." });
   }
-  const { rows } = await pool.query(
-    "UPDATE products SET low_stock_threshold=$2, updated_at=NOW() WHERE id=$1 RETURNING *",
-    [req.params.id, threshold],
-  );
-  if (!rows.length)
-    return res.status(404).json({ message: "Product not found." });
-  await invalidateProductCatalog();
-  return res.json({ product: rows[0] });
+  try {
+    const product = await updateProduct(req.params.id, {
+      low_stock_threshold: threshold,
+    });
+    await invalidateProductCatalog();
+    return res.json({ product });
+  } catch (error) {
+    if (error.statusCode === 404)
+      return res.status(404).json({ message: error.message });
+    throw error;
+  }
 });
 
 router.get("/suppliers/:id/products", ...staff, async (req, res) => {

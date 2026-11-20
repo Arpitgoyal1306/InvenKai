@@ -8,7 +8,7 @@ const {
   getProducts,
   getProductById,
   updateProduct,
-  deleteProduct,
+  archiveProduct,
 } = require("../src/services/product.service");
 
 // --------------------------------------------------
@@ -91,6 +91,7 @@ test("createProduct creates product and inventory in one transaction", async () 
       "Gaming laptop",
       "LAP-001",
       75000,
+      null,
     ]);
 
     assert.match(clientMock.queries[1].sql, /INSERT INTO products/i);
@@ -446,7 +447,7 @@ test("getProductById returns a product when found", async () => {
   try {
     assert.deepEqual(await getProductById("1"), mockProduct);
     assert.deepEqual(queryMock.mock.calls[0].arguments[1], ["1"]);
-    assert.match(queryMock.mock.calls[0].arguments[0], /WHERE id = \$1/i);
+    assert.match(queryMock.mock.calls[0].arguments[0], /WHERE id\s*=\s*\$1/i);
   } finally {
     queryMock.mock.restore();
   }
@@ -504,7 +505,7 @@ test("updateProduct updates a product successfully inside a transaction", async 
     assert.match(clientMock.queries[2].sql, /UPDATE products/i);
     assert.match(clientMock.queries[3].sql, /COMMIT/i);
     assert.deepEqual(clientMock.queries[2].params, [
-      "2", "Gaming Laptop", "Gaming laptop", "LAP-001", 75000, "1",
+      "2", "Gaming Laptop", "Gaming laptop", "LAP-001", 75000, "1", null,
     ]);
     assert.equal(clientMock.wasReleased(), true);
   } finally {
@@ -523,7 +524,7 @@ test("updateProduct preserves existing values during partial updates", async () 
   try {
     assert.deepEqual(await updateProduct("1", { price: 80000 }), updatedProduct);
     assert.deepEqual(clientMock.queries[2].params, [
-      "2", "Laptop", "Gaming laptop", "LAP-001", 80000, "1",
+      "2", "Laptop", "Gaming laptop", "LAP-001", 80000, "1", null,
     ]);
     assert.equal(clientMock.wasReleased(), true);
   } finally {
@@ -643,26 +644,26 @@ test("updateProduct maps invalid category errors to HTTP 400", async () => {
 // DELETE PRODUCT TESTS
 // --------------------------------------------------
 
-test("deleteProduct deletes a product successfully", async () => {
+test("archiveProduct archives a product successfully", async () => {
   const deletedProduct = { ...existingProduct };
   const queryMock = mock.method(pool, "query", async () => ({ rows: [deletedProduct] }));
 
   try {
-    assert.deepEqual(await deleteProduct("1"), deletedProduct);
+    assert.deepEqual(await archiveProduct("1"), deletedProduct);
     assert.deepEqual(queryMock.mock.calls[0].arguments[1], ["1"]);
-    assert.match(queryMock.mock.calls[0].arguments[0], /DELETE FROM products/i);
-    assert.match(queryMock.mock.calls[0].arguments[0], /WHERE id = \$1/i);
+    assert.match(queryMock.mock.calls[0].arguments[0], /UPDATE products SET archived=true/i);
+    assert.match(queryMock.mock.calls[0].arguments[0], /WHERE id\s*=\s*\$1/i);
     assert.match(queryMock.mock.calls[0].arguments[0], /RETURNING \*/i);
   } finally {
     queryMock.mock.restore();
   }
 });
 
-test("deleteProduct returns 404 when product does not exist", async () => {
+test("archiveProduct returns 404 when product does not exist", async () => {
   const queryMock = mock.method(pool, "query", async () => ({ rows: [] }));
 
   try {
-    await assert.rejects(deleteProduct("999"), {
+    await assert.rejects(archiveProduct("999"), {
       message: "Product not found",
       statusCode: 404,
     });
@@ -672,30 +673,12 @@ test("deleteProduct returns 404 when product does not exist", async () => {
   }
 });
 
-test("deleteProduct maps foreign-key errors to HTTP 409", async () => {
-  const queryMock = mock.method(pool, "query", async () => {
-    const error = new Error("Foreign key violation");
-    error.code = "23503";
-    throw error;
-  });
-
-  try {
-    await assert.rejects(deleteProduct("1"), {
-      message: "Cannot delete product because it has associated inventory, transaction history, or supplier records",
-      statusCode: 409,
-    });
-    assert.equal(queryMock.mock.calls.length, 1);
-  } finally {
-    queryMock.mock.restore();
-  }
-});
-
-test("deleteProduct rejects invalid product IDs without querying", async () => {
+test("archiveProduct rejects invalid product IDs without querying", async () => {
   const queryMock = mock.method(pool, "query", async () => ({ rows: [] }));
 
   try {
     for (const id of [0, -1, 1.5, "0", "abc", "9223372036854775808"]) {
-      await assert.rejects(deleteProduct(id), { statusCode: 400 });
+      await assert.rejects(archiveProduct(id), { statusCode: 400 });
     }
     assert.equal(queryMock.mock.calls.length, 0);
   } finally {
@@ -703,32 +686,32 @@ test("deleteProduct rejects invalid product IDs without querying", async () => {
   }
 });
 
-test("deleteProduct propagates unexpected database errors", async () => {
+test("archiveProduct propagates unexpected database errors", async () => {
   const queryMock = mock.method(pool, "query", async () => {
     throw new Error("Database connection failed");
   });
 
   try {
-    await assert.rejects(deleteProduct("1"), /Database connection failed/);
+    await assert.rejects(archiveProduct("1"), /Database connection failed/);
   } finally {
     queryMock.mock.restore();
   }
 });
 
-test("deleteProduct uses parameterized SQL", async () => {
+test("archiveProduct uses parameterized SQL", async () => {
   const queryMock = mock.method(pool, "query", async () => ({ rows: [{ id: "1" }] }));
 
   try {
-    await deleteProduct("1");
+    await archiveProduct("1");
     const [sql, params] = queryMock.mock.calls[0].arguments;
     assert.deepEqual(params, ["1"]);
-    assert.match(sql, /WHERE id = \$1/i);
+    assert.match(sql, /WHERE id\s*=\s*\$1/i);
   } finally {
     queryMock.mock.restore();
   }
 });
 
-test("createProduct, updateProduct, and deleteProduct preserve null and primitive thrown values", async () => {
+test("createProduct, updateProduct, and archiveProduct preserve null and primitive thrown values", async () => {
   const createClientMock = createProductClientMock(async (sql) => {
     if (sql.includes("INSERT INTO products")) {
       throw null;
@@ -775,7 +758,7 @@ test("createProduct, updateProduct, and deleteProduct preserve null and primitiv
 
   try {
     await assert.rejects(
-      deleteProduct("1"),
+      archiveProduct("1"),
       (err) => err === null,
     );
   } finally {

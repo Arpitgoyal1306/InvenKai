@@ -221,8 +221,8 @@ test("GET products returns products with pagination", async () => {
 });
 
 test("GET products uses default pagination", async () => {
-  const queryMock = mock.method(pool, "query", async () => ({
-    rows: [],
+  const queryMock = mock.method(pool, "query", async (sql) => ({
+    rows: sql.includes("count(*)") ? [{ total: 0 }] : [],
   }));
 
   try {
@@ -234,6 +234,7 @@ test("GET products uses default pagination", async () => {
     assert.deepEqual(response.body.pagination, {
       limit: 10,
       offset: 0,
+      total: 0,
     });
 
     assert.deepEqual(queryMock.mock.calls[0].arguments[1], [10, 0]);
@@ -438,7 +439,7 @@ test("PATCH products returns 409 for duplicate SKU", async () => {
 // DELETE PRODUCT
 // --------------------------------------------------
 
-test("DELETE products deletes a product for admin", async () => {
+test("DELETE products archives a product for admin", async () => {
   const queryMock = mock.method(pool, "query", async () => ({
     rows: [product],
   }));
@@ -449,7 +450,7 @@ test("DELETE products deletes a product for admin", async () => {
       .set("Authorization", `Bearer ${createToken("admin")}`);
 
     assert.equal(response.status, 200);
-    assert.equal(response.body.message, "Product deleted successfully");
+    assert.equal(response.body.message, "Product archived successfully");
     assert.deepEqual(response.body.product, product);
   } finally {
     queryMock.mock.restore();
@@ -473,7 +474,7 @@ test("DELETE products returns 404 when product does not exist", async () => {
   }
 });
 
-test("DELETE products returns 409 when product has dependent records", async () => {
+test("DELETE products returns 500 on an unexpected archive error", async () => {
   const queryMock = mock.method(pool, "query", async () => {
     const error = new Error("Foreign key violation");
     error.code = "23503";
@@ -485,7 +486,7 @@ test("DELETE products returns 409 when product has dependent records", async () 
       .delete("/api/products/1")
       .set("Authorization", `Bearer ${createToken("admin")}`);
 
-    assert.equal(response.status, 409);
+    assert.equal(response.status, 500);
   } finally {
     queryMock.mock.restore();
   }
@@ -720,7 +721,7 @@ test("DELETE products does not invalidate cache when deletion fails", async () =
       .delete("/api/products/1")
       .set("Authorization", `Bearer ${createToken("admin")}`);
 
-    assert.equal(response.status, 409);
+    assert.equal(response.status, 500);
     assert.equal(invalidationMock.mock.calls.length, 0);
   } finally {
     invalidationMock.mock.restore();

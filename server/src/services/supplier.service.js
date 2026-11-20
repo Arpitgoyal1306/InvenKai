@@ -416,7 +416,15 @@ const deleteSupplier = async (id) => {
   return result.rows[0] || null;
 };
 
+async function countSuppliers() {
+  const { rows } = await pool.query(
+    "SELECT count(*)::int AS total FROM suppliers WHERE is_active",
+  );
+  return rows[0].total;
+}
+
 module.exports = {
+  countSuppliers,
   createSupplier,
   getSuppliers,
   getSupplierById,

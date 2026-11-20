@@ -154,8 +154,8 @@ test("GET suppliers returns suppliers with pagination", async () => {
     },
   ];
 
-  const queryMock = mock.method(pool, "query", async () => ({
-    rows: mockSuppliers,
+  const queryMock = mock.method(pool, "query", async (sql) => ({
+    rows: sql.includes("count(*)") ? [{total:2}] : mockSuppliers,
   }));
 
   try {
@@ -168,8 +168,9 @@ test("GET suppliers returns suppliers with pagination", async () => {
     assert.deepEqual(response.body.pagination, {
       limit: 10,
       offset: 0,
+      total: 2,
     });
-    assert.equal(queryMock.mock.calls.length, 1);
+    assert.equal(queryMock.mock.calls.length, 2);
   } finally {
     queryMock.mock.restore();
   }

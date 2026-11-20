@@ -1,64 +1,43 @@
 # Invenkai
 
-**Real-time inventory & order management system** — built to prevent overselling under concurrent checkout, with live stock sync and async order processing.
+**Real-time inventory & order management system** — built to prevent overselling under concurrent checkout, with live stock sync and asynchronous receipt generation.
 
 ## 📖 About
 
-Invenkai lets multiple users browse a product catalog and place orders at the same time, while keeping inventory accurate across all connected clients. It solves a classic e-commerce problem — two users buying the last unit of an item at once — using safe, transactional stock updates, live sync, and async order processing.
+Invenkai lets multiple users browse a product catalog and place orders at the same time, while keeping inventory accurate across all connected clients. It solves a classic e-commerce problem — two users buying the last unit of an item at once — using safe, transactional stock updates, live sync, and asynchronous receipt generation.
 
 ## ✨ Features
 
 - 🛒 Live product catalog with real-time stock counts
 - 🔒 Concurrency-safe checkout — no overselling
 - ⚡ Real-time updates via WebSockets
-- 🧾 Digital receipt on order completion
-- 🔄 Async order processing via background queue
-- 🛠️ Admin view for restocking & live order monitoring
+- 🧾 Digital receipt after order placement
+- 🔄 Receipt generation via transactional outbox and BullMQ
+- 🛠️ Staff inventory tools and seller order management
 - 🤖 AI-powered recommendations *(planned)*
 
-## 🏗️ Architecture
+## Architecture
 
+```text
+React client ──REST──> Express API
+                         │ PostgreSQL transaction
+                         ▼
+                    Order + inventory + receipt outbox event
+                                                   │
+                                  Outbox dispatcher ▼
+                                                  BullMQ (Redis)
+                                                   │
+                                      Receipt worker ▼
+                                              PostgreSQL receipt
 ```
-React Frontend
-      │  REST + WebSocket
-      ▼
-Express API
-      │
-  ┌───┼────────────┬─────────────┐
-  ▼                ▼             ▼
-Neon (Postgres)   Redis      Queue Worker
-source of truth   cache +    async order
-                  live sync  processing
-```
 
-| Component | Role |
-|---|---|
-| React | Frontend — catalog, cart, live stock view |
-| Node.js + Express | API + WebSocket server |
-| Neon (PostgreSQL) | Source of truth, transactional stock updates |
-| Redis | Caching + pub/sub for live sync |
+Checkout completes in the API transaction. The dispatcher publishes committed outbox events to BullMQ. The worker generates receipts independently of fulfillment status. Buyers retrieve their own orders and receipts through the API.
 
-## 🧠 How It Works
+Redis also caches the platform catalog and publishes best-effort inventory events to staff WebSockets. Storefronts and sellers receive scoped refresh signals through server-sent events with polling fallback. Seller order status is refreshed through the API.
 
-1. User places an order → API checks & updates stock in one atomic transaction (Neon).
-2. Order confirmed → handed off to background queue.
-3. Redis broadcasts new stock count to all users via WebSocket.
-4. Worker processes the order and generates a receipt.
-5. User sees live order status update, no refresh needed.
+## Getting started
 
-## 🚀 Getting Started
-
-New contributors should start with the **[Developer Onboarding Guide](DEVELOPER_ONBOARDING.md)**. It covers the verified backend structure, local setup, individual Neon database branches, migrations, commands, issue workflow, and pull request expectations.
-
-
-```bash
-git clone https://github.com/<your-username>/invenkai.git
-cd invenkai
-npm install
-cp .env.example .env   # add DATABASE_URL, REDIS_URL
-npm run migrate
-npm run dev
-```
+See [Developer Onboarding](DEVELOPER_ONBOARDING.md) for local setup, migrations, database isolation, and contribution workflow. See [API contracts](docs/api-contracts.md) for integration details.
 
 ## 🗺️ Roadmap
 

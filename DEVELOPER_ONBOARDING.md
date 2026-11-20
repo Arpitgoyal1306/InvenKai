@@ -2,8 +2,6 @@
 
 Welcome to **InvenKai**. Read this guide before picking up an issue. It explains what the project is, how the current backend is organized, how to set up your local environment and your own Neon database branch, and how to contribute safely.
 
-> **Important:** This guide describes the repository's verified implementation on `main` at the time it was written. The README also describes the broader product vision. Some items in that vision (such as Redis caching, WebSockets, background workers, and completed checkout flows) are planned work, not functionality you should assume already exists. Always inspect the current code and linked issue before implementing a feature.
-
 ## 1. What is InvenKai?
 
 InvenKai is an inventory and order management application. Its goal is to help businesses manage products and stock while preventing incorrect inventory updates and overselling during concurrent purchases.
@@ -19,11 +17,9 @@ The intended system includes:
 - Reporting and analytics.
 - A React frontend, live inventory updates, and background processing.
 
-### Current implementation versus planned work
+### Runtime processes
 
-The backend currently has a working Express application, PostgreSQL connection, authentication routes, and basic inventory read/decrease operations. Check the actual files and open issues to determine what has since been merged.
-
-Do not assume a feature is implemented just because it appears in the product vision or README roadmap. For example, Redis, WebSockets, queue workers, and complete order checkout must be treated as planned until their implementation is present on the current branch.
+Express serves the API and staff WebSockets. PostgreSQL commits checkout, inventory changes, and the outbox event together. Run the outbox dispatcher and receipt worker as separate processes against the same PostgreSQL and Redis services. The React application lives in `client/`.
 
 ## 2. Technology stack
 
@@ -39,7 +35,7 @@ Do not assume a feature is implemented just because it appears in the product vi
 | jsonwebtoken | JWT authentication |
 | node:test | Built-in Node.js test runner |
 | Supertest | HTTP endpoint testing |
-| Redis | Planned caching/pub-sub/background-work support; verify current implementation before using |
+| Redis | Catalog caching, Pub/Sub, and BullMQ receipt jobs |
 
 The backend uses **CommonJS** (`require` / `module.exports`).
 

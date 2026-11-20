@@ -66,7 +66,7 @@ export function useAction() {
       setBusy(false);
     }
   }
-  return { act, busy, message };
+  return { act, busy, message, setMessage };
 }
 const cartKey = "invenkai.market.cart";
 function loadCart() {
@@ -559,7 +559,8 @@ export function Storefront({ user, cartSlug }) {
   const [cart, setCart] = useState(loadCart),
     [notice, N] = useState(""),
     [checkoutOpen, setCheckoutOpen] = useState(false),
-    { act, busy, message } = useAction();
+    { act, busy, message, setMessage } = useAction();
+  const checkoutRequest = useRef(null);
   const { hash } = useLocation();
   const loaded = Boolean(q.data);
   useEffect(() => {
@@ -604,19 +605,29 @@ export function Storefront({ user, cartSlug }) {
   async function checkout(event) {
     event.preventDefault();
     const buyerDetails = Object.fromEntries(new FormData(event.currentTarget));
-    if (!user || busy || review) return;
+    if (!user || busy) return;
+    const body = {
+      buyerDetails,
+      items: own.map((item) => ({
+        productId: item.id,
+        quantity: item.quantity,
+        price: item.price,
+      })),
+    };
+    const signature = JSON.stringify([slug, body]);
+    if (review && checkoutRequest.current?.signature !== signature) {
+      setMessage("Review the current price and stock before placing a different order.");
+      return;
+    }
+    if (checkoutRequest.current?.signature !== signature) {
+      checkoutRequest.current = { signature, key: crypto.randomUUID() };
+    }
     if (
       await act(() =>
         api("/market/stores/" + slug + "/orders", {
           method: "POST",
-          body: {
-            buyerDetails,
-            items: own.map((i) => ({
-              productId: i.id,
-              quantity: i.quantity,
-              price: i.price,
-            })),
-          },
+          body,
+          idempotencyKey: checkoutRequest.current.key,
         }),
       )
     ) {
@@ -820,17 +831,21 @@ export function Storefront({ user, cartSlug }) {
                 <p className="checkout-total">
                   Order total <strong>{total}</strong>
                 </p>
-                <button className="primary" disabled={busy || review}>
+                <button
+                  className="primary"
+                  disabled={busy || (review && !checkoutRequest.current)}
+                >
                   {busy
                     ? "Placing order…"
-                    : user
-                      ? "Place pickup order"
-                      : "Sign in to check out"}
+                    : review && checkoutRequest.current
+                      ? "Retry previous checkout"
+                      : "Place pickup order"}
                 </button>
                 {review && (
                   <p role="alert">
-                    The cart changed. Close checkout to review current price and
-                    availability.
+                    {checkoutRequest.current
+                      ? "Stock or price changed. You can retry the same checkout to check whether it already went through."
+                      : "The cart changed. Close checkout to review current price and availability."}
                   </p>
                 )}
                 {message && (

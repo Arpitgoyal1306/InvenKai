@@ -6,7 +6,9 @@ const authorizeRoles = require("../middleware/authorize-roles");
 const {
   createProduct,
   updateProduct,
-  deleteProduct,
+  archiveProduct,
+  countProducts,
+  validateProductPagination,
 } = require("../services/product.service");
 
 const productCache = require("../services/product-cache.service");
@@ -51,13 +53,18 @@ router.get("/", authenticateToken, async (req, res) => {
   const offset = req.query.offset === undefined ? 0 : Number(req.query.offset);
 
   try {
-    const products = await productCache.getCachedProducts(limit, offset);
+    validateProductPagination(limit, offset);
+    const [products, total] = await Promise.all([
+      productCache.getCachedProducts(limit, offset),
+      countProducts(),
+    ]);
 
     return res.status(200).json({
       products,
       pagination: {
         limit,
         offset,
+        total,
       },
     });
   } catch (error) {
@@ -134,8 +141,8 @@ router.patch(
   },
 );
 
-// Permanently delete a product.
-// Only admins can delete products.
+// Archive a product.
+// Only admins can archive products.
 router.delete(
   "/:id",
   authenticateToken,
@@ -144,13 +151,13 @@ router.delete(
     const { id } = req.params;
 
     try {
-      const product = await deleteProduct(id);
+      const product = await archiveProduct(id);
 
       // Invalidate cached catalog after successful deletion.
       await productCache.invalidateProductCatalog();
 
       return res.status(200).json({
-        message: "Product deleted successfully",
+        message: "Product archived successfully",
         product,
       });
     } catch (error) {
@@ -161,7 +168,7 @@ router.delete(
       }
 
       return res.status(500).json({
-        message: "Failed to delete product",
+        message: "Failed to archive product",
       });
     }
   },

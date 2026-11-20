@@ -16,7 +16,19 @@ router.post(
     try {
       const items = req.body?.items;
 
-      const order = await orderService.createOrder(req.user.id, items);
+      const key = req.get("Idempotency-Key");
+      const order =
+        key === undefined
+          ? await orderService.createOrder(req.user.id, items)
+          : await orderService.createOrder(
+              req.user.id,
+              items,
+              undefined,
+              undefined,
+              null,
+              null,
+              key,
+            );
 
       return res.status(201).json({
         message: "Order created successfully",

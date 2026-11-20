@@ -116,6 +116,7 @@ jobs:
           DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
           DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
           DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
+          DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
           test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT to_regclass('public.stores') IS NULL")" = "t"
           DATABASE_URL="$TEST_DATABASE_URL" npm run migrate down
           test "$(psql "$TEST_DATABASE_URL" -Atc "SELECT to_regclass('public.order_outbox') IS NOT NULL AND to_regclass('public.receipts') IS NOT NULL")" = "t"

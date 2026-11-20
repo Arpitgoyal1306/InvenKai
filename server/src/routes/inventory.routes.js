@@ -14,6 +14,16 @@ const router = express.Router();
 const staffOnly = authorizeRoles("inventory_manager", "admin");
 
 // Get inventory transaction history.
+const { listInventory } = require("../services/inventory.service");
+const { validateProductPagination } = require("../services/product.service");
+
+router.get("/", authenticateToken, staffOnly, async (req, res) => {
+  const limit = Number(req.query.limit ?? 20);
+  const offset = Number(req.query.offset ?? 0);
+  validateProductPagination(limit, offset);
+  res.json(await listInventory(limit, offset));
+});
+
 router.get("/history", authenticateToken, staffOnly, async (req, res) => {
   try {
     const productId =

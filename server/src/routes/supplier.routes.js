@@ -1,4 +1,3 @@
-
 const express = require("express");
 
 const authenticateToken = require("../middleware/auth.middleware");
@@ -7,6 +6,7 @@ const authorizeRoles = require("../middleware/authorize-roles");
 const {
   createSupplier,
   getSuppliers,
+  countSuppliers,
   getSupplierById,
   updateSupplier,
   deleteSupplier,
@@ -40,27 +40,25 @@ router.post(
         message: "Failed to create supplier",
       });
     }
-  }
+  },
 );
 
 // Get all active suppliers with pagination.
 router.get("/", authenticateToken, staffOnly, async (req, res) => {
-  const limit = req.query.limit === undefined
-    ? 10
-    : Number(req.query.limit);
+  const limit = req.query.limit === undefined ? 10 : Number(req.query.limit);
 
-  const offset = req.query.offset === undefined
-    ? 0
-    : Number(req.query.offset);
+  const offset = req.query.offset === undefined ? 0 : Number(req.query.offset);
 
   try {
     const suppliers = await getSuppliers(limit, offset);
+    const total = await countSuppliers();
 
     return res.status(200).json({
       suppliers,
       pagination: {
         limit,
         offset,
+        total,
       },
     });
   } catch (error) {
@@ -142,7 +140,7 @@ router.patch(
         message: "Failed to update supplier",
       });
     }
-  }
+  },
 );
 
 // Soft-delete a supplier.
@@ -178,7 +176,7 @@ router.delete(
         message: "Failed to delete supplier",
       });
     }
-  }
+  },
 );
 
 module.exports = router;

@@ -1,3 +1,4 @@
+const { createHash } = require("node:crypto");
 const pool = require("../config/database");
 const { publishInventoryUpdated } = require("./inventory-events.service");
 const { addOrderReceiptEvent } = require("./order-outbox.service");
@@ -201,7 +202,7 @@ async function getOrderById(userId, orderId, db = pool) {
     total_amount: firstRow.total_amount,
     created_at: firstRow.created_at,
     updated_at: firstRow.updated_at,
-    ...(firstRow.buyer_details && {buyer_details:firstRow.buyer_details}),
+    ...(firstRow.buyer_details && { buyer_details: firstRow.buyer_details }),
     items: [],
   };
 
@@ -225,7 +226,6 @@ async function getOrderById(userId, orderId, db = pool) {
   return order;
 }
 
-
 async function createOrder(
   userId,
   requestedItems,
@@ -233,9 +233,37 @@ async function createOrder(
   publishInventoryUpdatedFn = publishInventoryUpdated,
   storefront = null,
   buyerDetails = null,
+  checkoutKey,
 ) {
   const normalizedUserId = normalizeId(userId);
   const items = validateOrderItems(requestedItems);
+
+  if (
+    checkoutKey !== undefined &&
+    (typeof checkoutKey !== "string" || !/^[!-~]{1,128}$/.test(checkoutKey))
+  ) {
+    throw createError("Invalid Idempotency-Key.", 400);
+  }
+  const requestedPrices = new Map(
+    requestedItems.map((item) => [String(item.productId), item.price]),
+  );
+  const fingerprint =
+    checkoutKey &&
+    createHash("sha256")
+      .update(
+        JSON.stringify([
+          storefront,
+          buyerDetails,
+          items
+            .map((item) => [
+              item.productId,
+              item.quantity,
+              storefront ? String(requestedPrices.get(item.productId)) : null,
+            ])
+            .sort(),
+        ]),
+      )
+      .digest("hex");
 
   const client = await db.connect();
 
@@ -246,9 +274,36 @@ async function createOrder(
   try {
     await client.query("BEGIN");
 
+    if (checkoutKey) {
+      // Serialize only requests from the same buyer using the same checkout key.
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [JSON.stringify([normalizedUserId, checkoutKey])],
+      );
+      const {
+        rows: [previous],
+      } = await client.query(
+        "SELECT id,checkout_fingerprint FROM orders WHERE user_id=$1 AND checkout_key=$2",
+        [normalizedUserId, checkoutKey],
+      );
+      if (previous) {
+        if (previous.checkout_fingerprint !== fingerprint)
+          throw createError(
+            "This checkout key was used for a different order.",
+            409,
+          );
+        const order = await getOrderById(normalizedUserId, previous.id, client);
+        await client.query("COMMIT");
+        return order;
+      }
+    }
+
     let store;
     if (storefront) {
-      const result = await client.query("SELECT id, pickup FROM stores WHERE slug=$1 AND published FOR SHARE", [storefront]);
+      const result = await client.query(
+        "SELECT id, pickup FROM stores WHERE slug=$1 AND published FOR SHARE",
+        [storefront],
+      );
       store = result.rows[0];
       if (!store) throw createError("This store is unavailable", 404);
     }
@@ -286,12 +341,18 @@ async function createOrder(
       const product = productsById.get(item.productId);
 
       if (store) {
-        const quote = requestedItems.find(row => String(row.productId) === item.productId)?.price;
-        if (quote == null || Number(quote) !== Number(product.price)) throw createError(`Price changed for ${product.name}. Review your cart.`,409);
+        const quote = requestedPrices.get(item.productId);
+        if (quote == null || Number(quote) !== Number(product.price))
+          throw createError(
+            `Price changed for ${product.name}. Review your cart.`,
+            409,
+          );
       }
       if (product.available_quantity < item.quantity) {
         throw createError(
-          store ? `Only ${product.available_quantity} left for ${product.name}. Update the cart quantity.` : `Insufficient stock for product ${item.productId}`,
+          store
+            ? `Only ${product.available_quantity} left for ${product.name}. Update the cart quantity.`
+            : `Insufficient stock for product ${item.productId}`,
           409,
         );
       }
@@ -317,7 +378,18 @@ async function createOrder(
     }
 
     const order = orderResult.rows[0];
-    if (store) await client.query("UPDATE orders SET store_id=$2,pickup_snapshot=$3,buyer_details=$4 WHERE id=$1", [order.id,store.id,store.pickup,buyerDetails]);
+    if (store)
+      await client.query(
+        "UPDATE orders SET store_id=$2,pickup_snapshot=$3,buyer_details=$4 WHERE id=$1",
+        [order.id, store.id, store.pickup, buyerDetails],
+      );
+
+    if (checkoutKey) {
+      await client.query(
+        "UPDATE orders SET checkout_key=$2,checkout_fingerprint=$3 WHERE id=$1",
+        [order.id, checkoutKey, fingerprint],
+      );
+    }
 
     // Save order item snapshots.
     for (const item of items) {
@@ -424,6 +496,7 @@ async function createOrder(
 
     orderResponse = {
       ...totalResult.rows[0],
+      ...(store && buyerDetails && { buyer_details: buyerDetails }),
       items: itemsResult.rows,
     };
   } catch (error) {
@@ -454,7 +527,6 @@ async function createOrder(
 
   return orderResponse;
 }
-
 
 module.exports = {
   createOrder,

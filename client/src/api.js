@@ -16,6 +16,7 @@ export async function api(
     publicRoute = false,
     credentials,
     sameOrigin = false,
+    idempotencyKey,
   } = {},
 ) {
   const token = publicRoute ? null : sessionStorage.getItem(tokenKey);
@@ -26,6 +27,7 @@ export async function api(
       signal,
       credentials,
       headers: {
+        ...(idempotencyKey && { "Idempotency-Key": idempotencyKey }),
         ...(token && { Authorization: `Bearer ${token}` }),
         ...(body && { "Content-Type": "application/json" }),
       },

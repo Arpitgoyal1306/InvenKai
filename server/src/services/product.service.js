@@ -8,6 +8,7 @@ const ALLOWED_PRODUCT_FIELDS = [
   "description",
   "sku",
   "price",
+  "low_stock_threshold",
 ];
 
 function createError(message, statusCode = 400) {
@@ -61,7 +62,11 @@ function validateProductData(data, allowedFields, requireAll = false) {
 
   if (requireAll) {
     for (const field of allowedFields) {
-      if (!(field in data) && field !== "description") {
+      if (
+        !(field in data) &&
+        field !== "description" &&
+        field !== "low_stock_threshold"
+      ) {
         throw createError(`${field} is required`);
       }
     }
@@ -103,6 +108,15 @@ function validateProductData(data, allowedFields, requireAll = false) {
     }
   }
 
+  const threshold = data.low_stock_threshold;
+  if (
+    "low_stock_threshold" in data &&
+    threshold !== null &&
+    (!Number.isInteger(threshold) || threshold < 0 || threshold > 2147483647)
+  ) {
+    throw createError("Enter a nonnegative integer or clear the threshold.");
+  }
+
   if ("price" in data) {
     const price = data.price;
 
@@ -124,7 +138,14 @@ function validateProductData(data, allowedFields, requireAll = false) {
 async function createProduct(productData) {
   validateProductData(productData, ALLOWED_PRODUCT_FIELDS, true);
 
-  const { category_id, name, description = null, sku, price } = productData;
+  const {
+    category_id,
+    name,
+    description = null,
+    sku,
+    price,
+    low_stock_threshold = null,
+  } = productData;
 
   const client = await pool.connect();
   let operation = "product";
@@ -138,9 +159,9 @@ async function createProduct(productData) {
         name,
         description,
         sku,
-        price
+        price, low_stock_threshold
       )
-      VALUES ($1, $2, $3, $4, $5)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *`,
       [
         category_id,
@@ -148,6 +169,7 @@ async function createProduct(productData) {
         description === null ? null : description.trim() || null,
         sku.trim(),
         price,
+        low_stock_threshold,
       ],
     );
 
@@ -198,7 +220,7 @@ async function getProducts(limit = 10, offset = 0, db = pool) {
   const result = await db.query(
     `SELECT *
      FROM products
-     WHERE store_id IS NULL
+     WHERE store_id IS NULL AND NOT archived
      ORDER BY id
      LIMIT $1
      OFFSET $2`,
@@ -215,7 +237,7 @@ async function getProductById(id) {
   const result = await pool.query(
     `SELECT *
      FROM products
-     WHERE id = $1 AND store_id IS NULL`,
+     WHERE id = $1 AND store_id IS NULL AND NOT archived`,
     [id],
   );
 
@@ -235,7 +257,7 @@ async function updateProduct(id, productData) {
     const existingResult = await client.query(
       `SELECT *
        FROM products
-       WHERE id = $1
+       WHERE id = $1 AND store_id IS NULL AND NOT archived
        FOR UPDATE`,
       [id],
     );
@@ -252,6 +274,7 @@ async function updateProduct(id, productData) {
       description: existingProduct.description,
       sku: existingProduct.sku,
       price: Number(existingProduct.price),
+      low_stock_threshold: existingProduct.low_stock_threshold ?? null,
       ...productData,
     };
 
@@ -264,6 +287,7 @@ async function updateProduct(id, productData) {
            description = $3,
            sku = $4,
            price = $5,
+           low_stock_threshold = $7,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $6
        RETURNING *`,
@@ -276,6 +300,7 @@ async function updateProduct(id, productData) {
         updatedProduct.sku.trim(),
         updatedProduct.price,
         id,
+        updatedProduct.low_stock_threshold,
       ],
     );
 
@@ -305,37 +330,25 @@ async function updateProduct(id, productData) {
   }
 }
 
-// DELETE PRODUCT
-async function deleteProduct(id) {
+async function archiveProduct(id) {
   validateProductId(id);
+  const {
+    rows: [product],
+  } = await pool.query(
+    `UPDATE products SET archived=true,updated_at=NOW()
+     WHERE id=$1 AND store_id IS NULL AND NOT archived
+     RETURNING *`,
+    [id],
+  );
+  if (!product) throw createError("Product not found", 404);
+  return product;
+}
 
-  try {
-    const result = await pool.query(
-      `DELETE FROM products
-       WHERE id = $1
-       RETURNING *`,
-      [id],
-    );
-
-    if (result.rows.length === 0) {
-      throw createError("Product not found", 404);
-    }
-
-    return result.rows[0];
-  } catch (error) {
-    if (error?.statusCode) {
-      throw error;
-    }
-
-    if (error?.code === "23503" || error?.code === "23001") {
-      throw createError(
-        "Cannot delete product because it has associated inventory, transaction history, or supplier records",
-        409,
-      );
-    }
-
-    throw error;
-  }
+async function countProducts(db = pool) {
+  const { rows } = await db.query(
+    "SELECT count(*)::int AS total FROM products WHERE store_id IS NULL AND NOT archived",
+  );
+  return rows[0].total;
 }
 
 module.exports = {
@@ -343,7 +356,8 @@ module.exports = {
   getProducts,
   getProductById,
   updateProduct,
-  deleteProduct,
+  archiveProduct,
+  countProducts,
   validateProductId,
   validateProductPagination,
 };

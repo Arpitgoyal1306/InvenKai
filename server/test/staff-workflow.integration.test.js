@@ -81,8 +81,11 @@ test("product updates invalidate Redis and concurrent stock deductions serialize
     userId = user.rows[0].id;
     const auth = `Bearer ${jwt.sign({ sub: userId, role: "admin" }, process.env.JWT_SECRET)}`;
     const created = await request(app).post("/api/products").set("Authorization", auth)
-      .send({ category_id: categoryId, name: "Original", sku: suffix, price: 10 }).expect(201);
+      .send({ category_id: categoryId, name: "Original", sku: suffix, price: 10, low_stock_threshold: 2 }).expect(201);
     productId = created.body.product.id;
+    assert.equal(created.body.product.low_stock_threshold, 2);
+    const categories = await request(app).get("/api/categories").set("Authorization",auth).expect(200);
+    assert.ok(categories.body.categories.some(c=>c.id===categoryId));
     const path = `/api/products/${productId}`;
     await request(app).get(path).set("Authorization", auth).expect(200);
     const version = await redis.client.get(CATALOG_VERSION_KEY);
@@ -103,6 +106,15 @@ test("product updates invalidate Redis and concurrent stock deductions serialize
     const history = await request(app).get("/api/inventory/history").query({ productId })
       .set("Authorization", auth).expect(200);
     assert.equal(history.body.transactions.length, 2);
+
+    const inventory = await request(app).get("/api/inventory?limit=1&offset=0").set("Authorization",auth).expect(200);
+    assert.equal(inventory.body.products.length,1);
+    assert.ok(inventory.body.pagination.total >= 1);
+    await request(app).patch(path).set("Authorization",auth).send({low_stock_threshold:null}).expect(200);
+    await request(app).delete(path).set("Authorization",auth).expect(200);
+    await request(app).get(path).set("Authorization",auth).expect(404);
+    const retained = await pool.query("SELECT quantity FROM inventory WHERE product_id=$1",[productId]);
+    assert.equal(retained.rows[0].quantity,0);
   } finally {
     await redis.closeRedis();
     await pool.query("DELETE FROM inventory_transactions WHERE product_id = $1", [productId]);

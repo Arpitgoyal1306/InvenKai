@@ -877,3 +877,38 @@ test("getOrderById returns 404 when the order does not exist", async () => {
     await cleanupFixture(fixture);
   }
 });
+test("concurrent retries using the same checkout key place one order and deduct stock once", async () => {
+  const fixture = await createFixture(3);
+  try {
+    const key = randomUUID();
+    const place = (quantity) =>
+      createOrder(
+        fixture.userId,
+        [{ productId: fixture.productId, quantity }],
+        testPool,
+        async () => {},
+        null,
+        null,
+        key,
+      );
+    const [first, retry] = await Promise.all([place(2), place(2)]);
+    assert.deepEqual(first, retry);
+    await assert.rejects(place(1), { statusCode: 409 });
+    const {
+      rows: [stock],
+    } = await testPool.query(
+      "SELECT quantity FROM inventory WHERE product_id=$1",
+      [fixture.productId],
+    );
+    assert.equal(stock.quantity, 1);
+    const {
+      rows: [events],
+    } = await testPool.query(
+      "SELECT count(*)::int AS count FROM order_outbox WHERE order_id=$1",
+      [first.id],
+    );
+    assert.equal(events.count, 1);
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});

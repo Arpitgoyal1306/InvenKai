@@ -37,6 +37,7 @@ function createInventoryService({
        INNER JOIN inventory i ON i.product_id = p.id
        WHERE p.low_stock_threshold IS NOT NULL
          AND i.quantity <= p.low_stock_threshold
+         AND NOT p.archived
        ORDER BY i.quantity ASC, p.name ASC`,
     );
 
@@ -217,7 +218,28 @@ function createInventoryService({
 
 const inventoryService = createInventoryService();
 
+async function listInventory(limit, offset, db = pool) {
+  const scope = "p.store_id IS NULL AND NOT p.archived";
+  const [page, count] = await Promise.all([
+    db.query(
+      `SELECT p.id,p.name,p.sku,p.category_id,c.name AS category,p.price,
+      i.quantity,p.low_stock_threshold
+      FROM products p JOIN inventory i ON i.product_id=p.id
+      JOIN categories c ON c.id=p.category_id
+      WHERE ${scope} ORDER BY p.id LIMIT $1 OFFSET $2`,
+      [limit, offset],
+    ),
+    db.query(`SELECT count(*)::int AS total FROM products p
+      JOIN inventory i ON i.product_id=p.id WHERE ${scope}`),
+  ]);
+  return {
+    products: page.rows,
+    pagination: { limit, offset, total: count.rows[0].total },
+  };
+}
+
 module.exports = {
+  listInventory,
   createInventoryService,
   ...inventoryService,
 };

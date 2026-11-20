@@ -172,6 +172,7 @@ router.post("/stores/:slug/orders", auth, async (req, res) => {
       undefined,
       slug(req.params.slug),
       buyerDetails,
+      req.get("Idempotency-Key"),
     );
     res.status(201).json({ order });
   } catch (e) {

@@ -187,16 +187,24 @@ test("store publication, private inventory and fulfillment stay scoped to their 
     for (const [price, quantity, status] of [
       [4, 1, 409],
       [5, 3, 409],
-      [5, 2, 201],
     ]) {
       await call("post", store + "/orders", buyer, {
         items: [{ productId: id, price, quantity }],
         buyerDetails,
       }).expect(status);
     }
+    const checkout = () =>
+      call("post", store + "/orders", buyer, {
+        items: [{ productId: id, price: 5, quantity: 2 }],
+        buyerDetails,
+      }).set("Idempotency-Key", key);
+    const firstCheckout = await checkout().expect(201);
+    const replay = await checkout().expect(201);
+    assert.deepEqual(replay.body, firstCheckout.body);
     const {
       body: { orders },
     } = await call("get", "/market/owner/orders", a).expect(200);
+    assert.equal(orders.length, 1);
     const detail = "/market/owner/orders/" + orders[0].id;
     assert.deepEqual(
       (await call("get", detail, a)).body.order.buyer_details,

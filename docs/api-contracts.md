@@ -3,17 +3,7 @@
 
 ## 1. Scope
 
-This document describes the currently implemented API endpoints in these five backend route modules:
-
-- `server/src/routes/auth.routes.js`
-- `server/src/routes/product.routes.js`
-- `server/src/routes/supplier.routes.js`
-- `server/src/routes/inventory.routes.js`
-- `server/src/routes/reports.routes.js`
-
-The API base path is `/api`. Set `CLIENT_URL` to the frontend origin to enable browser CORS requests and WebSocket connections from that origin.
-
-Only existing endpoints in these five modules are documented. No future endpoints or backend implementation changes are included.
+This document covers the platform APIs and summarizes the marketplace, receipt, and WebSocket contracts. The API base path is `/api`. Set `CLIENT_URL` to the frontend origin for browser access.
 
 All request and response examples use JSON. IDs, timestamps, and database-generated values are illustrative.
 
@@ -370,7 +360,7 @@ Errors:
 | 401 / 403 | Authentication or role requirement not met |
 | 500 | `{"message":"Failed to update product"}` |
 
-### 4.5 Delete a product
+### 4.5 Archive a platform product
 
 **DELETE** `/api/products/:id`
 
@@ -389,7 +379,7 @@ Success response — **200 OK**
 
 ```json
 {
-  "message": "Product deleted successfully",
+  "message": "Product archived successfully",
   "product": {
     "id": 1,
     "name": "Wireless Mouse",
@@ -404,9 +394,9 @@ Errors:
 |---|---|
 | 400 | Invalid product ID |
 | 404 | Product not found |
-| 409 | Product has associated inventory, transaction history, or supplier records |
+
 | 401 / 403 | Authentication or role requirement not met |
-| 500 | `{"message":"Failed to delete product"}` |
+| 500 | `{"message":"Failed to archive product"}` |
 
 ## 5. Supplier Endpoints
 
@@ -1046,7 +1036,7 @@ Unexpected server errors return HTTP 500 with `{"message":"Internal Server Error
 | Method and path | Access | Behavior |
 |---|---|---|
 | POST `/api/categories` | Staff | Create a unique category from `name`. Returns 201, or 409 for an existing name. |
-| PATCH `/api/products/:id/threshold` | Staff | Set `low_stock_threshold` to a nonnegative integer, or null to disable monitoring. |
+| PATCH `/api/products/:id/threshold` | Staff | Set the platform product threshold to a nonnegative 32-bit integer, or null to clear it. |
 | GET `/api/suppliers/:id/products` | Staff | Paginate the catalog with `limit` and `offset`. Set `linked=true` to return only linked products. |
 | PUT / DELETE `/api/suppliers/:id/products/:productId` | Staff | Link or unlink a product. Repeated requests are idempotent. |
 | GET `/api/orders/:id/receipt` | Order owner | Returns a receipt snapshot or `{"receipt":null}` while the receipt is unavailable. Unknown and inaccessible orders return 404. |
@@ -1055,3 +1045,29 @@ Unexpected server errors return HTTP 500 with `{"message":"Internal Server Error
 | POST `/api/operations/failed-receipts/:id/retry` | Admin | Retry the retained failed receipt job for this order, using the same checks as the recovery CLI. |
 
 Staff access includes inventory managers and admins. The receipt worker and dispatcher must be running to generate receipts.
+
+## Catalog and inventory integration
+
+Platform product creation and updates accept optional `low_stock_threshold` as a nonnegative 32-bit integer or `null`. Archiving hides the product from catalog and checkout while preserving its inventory, order, and supplier records. Product and supplier listings provide `pagination.total` in addition to `limit` and `offset`.
+
+| Method and path | Access | Behavior |
+|---|---|---|
+| GET `/api/categories` | Staff | Returns `{categories: [{id, name}]}`. |
+| GET `/api/inventory?limit=20&offset=0` | Staff | Returns `{products, pagination}`. Each row includes ID, SKU, name, category ID and name, price, quantity, and threshold. |
+
+## Orders and live updates
+
+| Method and path | Access | Behavior |
+|---|---|---|
+| POST `/api/orders` | Customer or admin | Place a platform order with `items`. Each item has `productId` and `quantity`. |
+| GET `/api/orders?page=1&limit=10` | Authenticated | Lists the caller's orders with pagination. |
+| GET `/api/orders/:orderId` | Buyer | Returns the order, item snapshots, and saved buyer details if present. |
+| POST `/api/market/stores/:slug/orders` | Authenticated buyer | Places a store order with buyer details and items including quoted prices. |
+| PATCH `/api/market/owner/orders/:id` | Receiving store owner | Advances `placed` to `processing`, or `processing` to `completed`. |
+| POST `/api/auth/ws-ticket` | Staff | Issues a short-lived, single-use ticket for `/ws?ticket=...`. |
+| GET `/api/market/live` | Public | Streams storefront refresh signals. |
+| GET `/api/market/owner/live` | Authenticated seller | Streams owner-scoped inventory refresh signals. |
+
+Both checkout endpoints accept an optional `Idempotency-Key` header with 1–128 visible ASCII characters. Retrying the same checkout as the same buyer returns the original order. Reusing the key for different checkout data returns 409. A successful transaction stores the key with the order and enqueues the receipt through the outbox. A rolled-back transaction leaves the key available for retry.
+
+Staff WebSockets deliver `inventory.updated` events. Redis Pub/Sub is best effort. Refresh the inventory API after reconnecting. Fulfillment status is available through the order APIs.

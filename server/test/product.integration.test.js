@@ -22,7 +22,7 @@ const {
   getProducts,
   getProductById,
   updateProduct,
-  deleteProduct,
+  archiveProduct,
 } = require("../src/services/product.service");
 
 before(async () => {
@@ -332,26 +332,28 @@ test("preserves independent changes from concurrent product updates", async () =
 });
 
 // 9. DELETE PRODUCT WITHOUT DEPENDENCIES
-test("deletes a product without dependent records", async () => {
+test("archives a product without dependent records", async () => {
   const fixture = await createProductFixture();
 
   try {
-    const deletedProduct = await deleteProduct(String(fixture.productId));
+    const archivedProduct = await archiveProduct(String(fixture.productId));
 
-    assert.equal(String(deletedProduct.id), String(fixture.productId));
+    assert.equal(String(archivedProduct.id), String(fixture.productId));
 
     const result = await pool.query("SELECT id FROM products WHERE id = $1", [
       fixture.productId,
     ]);
 
-    assert.equal(result.rows.length, 0);
+    assert.equal(result.rows.length, 1);
+    assert.equal(archivedProduct.archived, true);
+    assert.equal(await getProductById(String(fixture.productId)), null);
   } finally {
     await cleanupProductFixture(fixture);
   }
 });
 
 // 10. DELETE PRODUCT WITH INVENTORY
-test("prevents deletion of a product with inventory", async () => {
+test("archives without removing inventory", async () => {
   const fixture = await createProductFixture();
 
   try {
@@ -361,17 +363,14 @@ test("prevents deletion of a product with inventory", async () => {
       [fixture.productId, 0],
     );
 
-    await assert.rejects(
-      deleteProduct(String(fixture.productId)),
-      (error) => error.statusCode === 409,
-    );
+    assert.equal((await archiveProduct(String(fixture.productId))).archived, true);
   } finally {
     await cleanupProductFixture(fixture);
   }
 });
 
 // 11. DELETE PRODUCT WITH TRANSACTION HISTORY
-test("prevents deletion of a product with transaction history", async () => {
+test("archives without removing transaction history", async () => {
   const fixture = await createProductFixture();
 
   try {
@@ -388,17 +387,14 @@ test("prevents deletion of a product with transaction history", async () => {
       [fixture.productId],
     );
 
-    await assert.rejects(
-      deleteProduct(String(fixture.productId)),
-      (error) => error.statusCode === 409,
-    );
+    assert.equal((await archiveProduct(String(fixture.productId))).archived, true);
   } finally {
     await cleanupProductFixture(fixture);
   }
 });
 
 // 12. DELETE PRODUCT WITH SUPPLIER ASSOCIATION
-test("prevents deletion of a product associated with a supplier", async () => {
+test("archives without removing supplier associations", async () => {
   const fixture = await createProductFixture();
   const uniqueId = randomUUID();
 
@@ -418,10 +414,7 @@ test("prevents deletion of a product associated with a supplier", async () => {
       [fixture.supplierId, fixture.productId],
     );
 
-    await assert.rejects(
-      deleteProduct(String(fixture.productId)),
-      (error) => error.statusCode === 409,
-    );
+    assert.equal((await archiveProduct(String(fixture.productId))).archived, true);
   } finally {
     await cleanupProductFixture(fixture);
   }
