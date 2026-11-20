@@ -1,0 +1,353 @@
+.editorial-landing,
+.market.market-discovery {
+  --editorial-paper: #f7f2e8;
+  --editorial-green: #153d32;
+  --editorial-brass: #bc8d55;
+  --editorial-ink: #16372e;
+  background: var(--editorial-paper);
+  color: var(--editorial-ink);
+}
+
+.editorial-landing {
+  min-height: 100vh;
+}
+
+.editorial-landing a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.editorial-header {
+  position: sticky;
+  z-index: 5;
+  top: 0;
+  background: rgb(247 242 232 / 0.95);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid #e4d9c7;
+}
+
+.editorial-header-inner,
+.editorial-main {
+  width: min(1320px, 92%);
+  margin-inline: auto;
+}
+
+.editorial-header-inner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 70px;
+  gap: 12px;
+}
+
+.editorial-header nav,
+.editorial-hero-actions {
+  display: flex;
+  gap: 22px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.editorial-header nav a {
+  font-size: 0.93rem;
+  font-weight: 700;
+}
+
+.editorial-account-link,
+.editorial-button,
+.editorial-seller-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.editorial-account-link {
+  border: 1px solid #cdbfa9;
+  border-radius: 7px;
+  padding: 9px 13px;
+}
+
+.editorial-header .brand-mark {
+  background: #e9c297;
+  color: #153d32;
+  position: relative;
+  overflow: hidden;
+}
+
+.editorial-header .brand-mark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 28%,
+    #fff1cea1 50%,
+    transparent 72%
+  );
+  transform: translateX(-100%);
+  animation: editorial-sheen 950ms 300ms ease-out both;
+}
+
+@keyframes editorial-sheen {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.editorial-main {
+  padding-block: clamp(16px, 4vw, 52px);
+}
+
+.editorial-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  overflow: hidden;
+  border-radius: 16px;
+  background: radial-gradient(ellipse at 0% 10%, #244c3b, #102d26 70%);
+  background-size: 130% 130%;
+  animation: editorial-drift 16s ease-in-out infinite alternate;
+  color: #fff9ee;
+}
+
+@keyframes editorial-drift {
+  to {
+    background-position: 80% 75%;
+  }
+}
+
+.editorial-copy {
+  padding: clamp(30px, 5vw, 78px);
+  align-self: center;
+}
+
+.editorial-copy h1,
+.discover-intro h1 {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 400;
+  letter-spacing: -0.064em;
+  line-height: 0.98;
+}
+
+.editorial-copy h1 {
+  font-size: clamp(3.5rem, 6vw, 6.35rem);
+}
+
+.editorial-copy h1 em {
+  color: #efc396;
+  font-weight: inherit;
+}
+
+.editorial-copy p,
+.discover-intro p {
+  max-width: 31ch;
+  font-size: clamp(1rem, 1.55vw, 1.22rem);
+  line-height: 1.55;
+}
+
+.editorial-copy p {
+  color: #e3e9dc;
+  margin-block: clamp(19px, 3vw, 34px);
+}
+
+.editorial-hero-photo,
+.discover-hero > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.editorial-hero-photo {
+  min-height: 450px;
+  object-position: center;
+}
+
+.editorial-landing .editorial-button {
+  min-height: 50px;
+  padding: 12px 18px;
+  border-radius: 7px;
+  background: #efc396;
+  color: #172f27;
+  font-weight: 800;
+}
+
+.editorial-landing .editorial-button:hover {
+  background: #ffdab2;
+}
+
+.editorial-seller-link {
+  font-size: 0.93rem;
+  font-weight: 700;
+}
+
+.editorial-seller-link:hover,
+.editorial-browse-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.editorial-paths {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 22px;
+  gap: 16px;
+}
+
+.editorial-paths > a {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 15px;
+  background: #fffaf2;
+  border: 1px solid #e8ddcc;
+  border-radius: 12px;
+  padding: 18px 21px;
+}
+
+.editorial-paths > a:hover {
+  border-color: var(--editorial-brass);
+}
+
+.editorial-path-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 9px;
+  background: #efeadc;
+}
+
+.editorial-paths strong,
+.editorial-paths small {
+  display: block;
+}
+
+.editorial-paths small {
+  margin-top: 3px;
+  color: #496158;
+}
+
+.market-discovery .market-head {
+  background: rgb(21 61 50 / 0.98);
+}
+
+.discover-hero {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #eee3d0;
+}
+
+.discover-intro {
+  align-self: center;
+  padding: clamp(27px, 4vw, 49px);
+}
+
+.discover-intro h1 {
+  font-size: clamp(3rem, 6vw, 5.6rem);
+  color: var(--editorial-green);
+}
+
+.discover-intro p {
+  margin: 15px 0 0;
+  color: #3e574c;
+  max-width: 36ch;
+}
+
+.discover-hero > img {
+  max-height: 255px;
+  object-position: center 68%;
+}
+
+.discover-toolbar {
+  margin-block: 34px 18px;
+}
+
+.discover-toolbar .market-title {
+  margin-bottom: 14px;
+}
+
+.discover-toolbar .market-filters {
+  margin: 0;
+  padding: 10px;
+  background: #fffaf2;
+  border-radius: 10px;
+  border: 1px solid #e4d9c7;
+}
+
+.market-discovery .store-directory .market-card {
+  border: 1px solid #e0d8c9;
+  background: #fffaf2;
+}
+
+.market-discovery .store-directory .market-photo {
+  aspect-ratio: 16 / 10;
+  height: auto;
+}
+
+.market-discovery .market-card h3 {
+  font:
+    400 clamp(1.55rem, 2.6vw, 2.15rem)/1.07 Georgia,
+    "Times New Roman",
+    serif;
+  color: var(--editorial-green);
+  letter-spacing: -0.035em;
+  margin: 7px 0;
+}
+
+.market-discovery .market-card .discover-category {
+  color: #465b4e;
+  background: #eae8d9;
+  display: inline-block;
+  border-radius: 5px;
+  padding: 4px 7px;
+}
+
+.market-discovery .directory-products {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #e8ddcc;
+}
+
+.market-discovery .market-card a.visit-store {
+  margin-top: auto;
+}
+
+@media (max-width: 760px) {
+  .editorial-hero,
+  .discover-hero,
+  .editorial-paths {
+    grid-template-columns: 1fr;
+  }
+  .editorial-hero-photo {
+    min-height: 0;
+    height: auto;
+    aspect-ratio: 16 / 9;
+  }
+  .discover-hero > img {
+    height: clamp(125px, 32vw, 205px);
+  }
+}
+
+@media (max-width: 430px) {
+  .editorial-header nav,
+  .editorial-hero-actions {
+    gap: 12px;
+  }
+  .editorial-header .editorial-browse-link {
+    display: none;
+  }
+  .editorial-copy {
+    padding-inline: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .editorial-hero,
+  .editorial-header .brand-mark::after {
+    animation: none;
+  }
+}

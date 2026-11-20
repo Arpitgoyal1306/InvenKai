@@ -43,14 +43,16 @@ import {
   CartPage,
 } from "./Market";
 import { Owner } from "./Owner";
+import { Landing } from "./Landing";
 import Warehouse from "./Warehouse";
 import { Overview, Products, Inventory, Suppliers, Orders } from "./Workspace";
 import { Operations } from "./Operations";
 import "./style.css";
 import "./market.css";
+import "./market-editorial.css";
 import { AccountSettings } from "./Account";
 
-function Auth({ register, login, landing }) {
+function Auth({ register, login }) {
   const location = useLocation();
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
@@ -100,141 +102,104 @@ function Auth({ register, login, landing }) {
       </section>
       <section className="auth-content">
         <div className="auth-box">
-          {landing ? (
-            <>
-              <h2>Welcome to InvenKai</h2>
-              <p className="intro">Choose how you’d like to get started.</p>
-              <Link className="entry-choice" to="/explore">
-                <img src="/images/sample-shops/bakery.jpg" alt="" />
-                <span>
-                  <strong>Shop as a buyer</strong>
-                  <small>
-                    Explore stores, order products and track pickups.
-                  </small>
-                </span>
-                <b>→</b>
-              </Link>
-              <Link className="entry-choice" to="/owner">
-                <img src="/images/sample-shops/roaster.jpg" alt="" />
-                <span>
-                  <strong>Manage my store</strong>
-                  <small>
-                    Build your storefront and fulfill incoming orders.
-                  </small>
-                </span>
-                <b>→</b>
-              </Link>
-              <p className="entry-signin">
-                Returning to InvenKai? <Link to="/login">Sign in</Link>
-              </p>
-            </>
-          ) : (
-            <>
-              <div className="tabs auth-tabs">
-                <Link
-                  className={!register ? "selected" : ""}
-                  to={"/login" + location.search}
-                >
-                  Sign in
-                </Link>
-                <Link
-                  className={register ? "selected" : ""}
-                  to={"/register" + location.search}
-                >
-                  Create account
-                </Link>
-              </div>
-              <h2>{register ? "Create your account" : "Welcome back"}</h2>
-              <p className="intro">
-                {register
-                  ? "Register to browse products and place orders."
-                  : "Sign in to your InvenKai workspace."}
-              </p>
-              <form onSubmit={submit}>
-                <fieldset disabled={busy}>
-                  {register && (
-                    <label>
-                      Full name
-                      <div className="input-icon">
-                        <UserRound />
-                        <input
-                          required
-                          name="name"
-                          autoComplete="name"
-                          placeholder="Your name"
-                          maxLength="100"
-                        />
-                      </div>
-                    </label>
-                  )}
-                  <label>
-                    Email address
-                    <div className="input-icon">
-                      <Mail />
-                      <input
-                        type="email"
-                        name="email"
-                        required
-                        autoComplete="email"
-                        placeholder="you@example.com"
-                      />
-                    </div>
-                  </label>
-                  <label>
-                    Password
-                    <div className="input-icon">
-                      <LockKeyhole />
-                      <input
-                        type={show ? "text" : "password"}
-                        name="password"
-                        required
-                        minLength={register ? 8 : 1}
-                        autoComplete={
-                          register ? "new-password" : "current-password"
-                        }
-                        placeholder={
-                          register
-                            ? "At least 8 characters"
-                            : "Enter your password"
-                        }
-                      />
-                      <button
-                        type="button"
-                        aria-label={show ? "Hide password" : "Show password"}
-                        onClick={() => setShow(!show)}
-                      >
-                        {show ? <EyeOff /> : <Eye />}
-                      </button>
-                    </div>
-                  </label>
-                  {error && (
-                    <p className="error" role="alert">
-                      {error}
-                    </p>
-                  )}
-                  <button className="primary wide">
-                    {busy
-                      ? "Please wait…"
-                      : register
-                        ? "Create account"
-                        : "Sign in"}
+          <div className="tabs auth-tabs">
+            <Link
+              className={!register ? "selected" : ""}
+              to={"/login" + location.search}
+            >
+              Sign in
+            </Link>
+            <Link
+              className={register ? "selected" : ""}
+              to={"/register" + location.search}
+            >
+              Create account
+            </Link>
+          </div>
+          <h2>{register ? "Create your account" : "Welcome back"}</h2>
+          <p className="intro">
+            {register
+              ? "Register to browse products and place orders."
+              : "Sign in to your InvenKai workspace."}
+          </p>
+          <form onSubmit={submit}>
+            <fieldset disabled={busy}>
+              {register && (
+                <label>
+                  Full name
+                  <div className="input-icon">
+                    <UserRound />
+                    <input
+                      required
+                      name="name"
+                      autoComplete="name"
+                      placeholder="Your name"
+                      maxLength="100"
+                    />
+                  </div>
+                </label>
+              )}
+              <label>
+                Email address
+                <div className="input-icon">
+                  <Mail />
+                  <input
+                    type="email"
+                    name="email"
+                    required
+                    autoComplete="email"
+                    placeholder="you@example.com"
+                  />
+                </div>
+              </label>
+              <label>
+                Password
+                <div className="input-icon">
+                  <LockKeyhole />
+                  <input
+                    type={show ? "text" : "password"}
+                    name="password"
+                    required
+                    minLength={register ? 8 : 1}
+                    autoComplete={
+                      register ? "new-password" : "current-password"
+                    }
+                    placeholder={
+                      register ? "At least 8 characters" : "Enter your password"
+                    }
+                  />
+                  <button
+                    type="button"
+                    aria-label={show ? "Hide password" : "Show password"}
+                    onClick={() => setShow(!show)}
+                  >
+                    {show ? <EyeOff /> : <Eye />}
                   </button>
-                </fieldset>
-              </form>
-              <a
-                className="google-sign-in"
-                href={(import.meta.env.PROD ? "/api" : base) + "/auth/google"}
-                onClick={() => {
-                  sessionStorage.setItem(
-                    "invenkai.google.next",
-                    location.search,
-                  );
-                }}
-              >
-                Continue with Google
-              </a>
-            </>
-          )}
+                </div>
+              </label>
+              {error && (
+                <p className="error" role="alert">
+                  {error}
+                </p>
+              )}
+              <button className="primary wide">
+                {busy
+                  ? "Please wait…"
+                  : register
+                    ? "Create account"
+                    : "Sign in"}
+              </button>
+            </fieldset>
+          </form>
+          <a
+            className="google-sign-in"
+            href={(import.meta.env.PROD ? "/api" : base) + "/auth/google"}
+            onClick={() => {
+              sessionStorage.setItem("invenkai.google.next", location.search);
+            }}
+          >
+            Continue with Google
+          </a>
         </div>
       </section>
     </main>
@@ -619,7 +584,7 @@ function App() {
     <QueryClientProvider client={client}>
       <Routes>
         <Route path="/home" element={<GoogleCallback login={login} />} />
-        <Route path="/" element={<Auth landing />} />
+        <Route path="/" element={<Landing user={user} />} />
         {["login", "register"].map((path) => (
           <Route
             key={path}
