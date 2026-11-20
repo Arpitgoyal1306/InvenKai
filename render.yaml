@@ -1,6 +1,7 @@
 services:
   - type: web
-    name: invenkai-backend
+    name: InvenKai
+    region: oregon
     runtime: node
     rootDir: server
     buildCommand: npm install
@@ -19,6 +20,7 @@ services:
         sync: false
   - type: worker
     name: invenkai-order-dispatcher
+    region: oregon
     runtime: node
     plan: 0.5c-512mb
     rootDir: server
@@ -29,16 +31,17 @@ services:
         value: production
       - key: DATABASE_URL
         fromService:
-          name: invenkai-backend
+          name: InvenKai
           type: web
           envVarKey: DATABASE_URL
       - key: REDIS_URL
         fromService:
-          name: invenkai-backend
+          name: InvenKai
           type: web
           envVarKey: REDIS_URL
   - type: worker
     name: invenkai-receipt-worker
+    region: oregon
     runtime: node
     plan: 0.5c-512mb
     rootDir: server
@@ -49,11 +52,11 @@ services:
         value: production
       - key: DATABASE_URL
         fromService:
-          name: invenkai-backend
+          name: InvenKai
           type: web
           envVarKey: DATABASE_URL
       - key: REDIS_URL
         fromService:
-          name: invenkai-backend
+          name: InvenKai
           type: web
           envVarKey: REDIS_URL

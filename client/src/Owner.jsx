@@ -434,26 +434,34 @@ function ProductForm({ product, close }) {
   );
 }
 function History() {
-  const q = useMarket(root + "/history");
+  const listing = useMarketPage(root + "/history");
+  const q = listing.query;
   return (
-    <State
-      query={q}
-      empty={!q.data?.history.length}
-      message="No stock movements yet."
-    >
-      <Table
-        heads={["Date", "Product", "Change", "Stock after"]}
-        rows={(q.data?.history || []).map((t) => ({
-          key: t.id,
-          cells: [
-            dateTime(t.created_at),
-            t.name,
-            t.transaction_type + " " + t.quantity,
-            t.quantity_after,
-          ],
-        }))}
-      />
-    </State>
+    <>
+      <State
+        query={q}
+        empty={!q.data?.history.length}
+        message={
+          listing.page === 1
+            ? "No stock movements yet."
+            : "No stock movements on this page."
+        }
+      >
+        <Table
+          heads={["Date", "Product", "Change", "Stock after"]}
+          rows={(q.data?.history || []).map((t) => ({
+            key: t.id,
+            cells: [
+              dateTime(t.created_at),
+              t.name,
+              t.transaction_type + " " + t.quantity,
+              t.quantity_after,
+            ],
+          }))}
+        />
+      </State>
+      <MarketPager listing={listing} />
+    </>
   );
 }
 function Products() {

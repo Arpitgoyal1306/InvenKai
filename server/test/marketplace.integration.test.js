@@ -297,6 +297,50 @@ test("store publication, private inventory and fulfillment stay scoped to their 
     assert.equal(Number(summary.sales), 10);
 
     await t.test(
+      "owner history reaches past the first 100 scoped rows",
+      async () => {
+        await query(
+          `INSERT INTO inventory_transactions
+           (product_id, transaction_type, quantity, quantity_before, quantity_after)
+         SELECT $1, 'increase', 1, n - 1, n FROM generate_series(1, 102) n`,
+          [id],
+        );
+        const path = "/market/owner/history";
+        await call("get", path).expect(401);
+        const { body: first } = await call("get", path, a).expect(200);
+        assert.equal(first.history.length, 20);
+        assert.deepEqual(first.pagination, {
+          limit: 20,
+          offset: 0,
+          hasMore: true,
+        });
+        const window = "?limit=2&offset=100";
+        const { body: older } = await call("get", path + window, a).expect(200);
+        assert.deepEqual(
+          older.history.map((row) => [row.name, row.quantity_after]),
+          [
+            ["Cup", 2],
+            ["Cup", 1],
+          ],
+        );
+        assert.deepEqual(older.pagination, {
+          limit: 2,
+          offset: 100,
+          hasMore: true,
+        });
+        const { body: secondSeller } = await call(
+          "get",
+          path + window,
+          b,
+        ).expect(200);
+        assert.deepEqual(secondSeller.history, []);
+        assert.equal(secondSeller.pagination.hasMore, false);
+        await call("get", path + "?limit=101", a).expect(400);
+        await call("get", path + "?offset=-1", a).expect(400);
+      },
+    );
+
+    await t.test(
       "warehouse stock, suppliers and reports stay separate from seller inventory",
       async () => {
         await call(

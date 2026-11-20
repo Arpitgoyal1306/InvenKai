@@ -47,7 +47,9 @@ See [Developer Onboarding](DEVELOPER_ONBOARDING.md) for local setup, migrations,
 - [x] Async order queue + receipts
 - [ ] AI-powered recommendations
 - [ ] Admin dashboard
-- [ ] Deployment
+- [x] Render and Vercel deployment configuration
+- [x] Production API and frontend verified
+- [ ] Production receipt dispatcher, worker, and end-to-end receipt verified
 
 ## 👥 Team
 
@@ -63,7 +65,7 @@ For local development, set up `server/.env` from `server/.env.example`. From the
 
 ### Deploy the API on Render
 
-The Render Blueprint uses the Node runtime with `server` as the root directory, `npm install` as the build command, and `npm run start` as the start command. Enter the production values in Render, including the internal Redis URL and the public client origin. Deploy the React app separately and set its `VITE_API_URL` to the bare Render backend URL. Apply the database migrations before starting the first release.
+The Render Blueprint uses the Node runtime with `server` as the root directory, `npm install` as the build command, and `npm run start` as the start command. Enter the production values in Render, including the internal Redis URL and the public client origin. Deploy the React app separately and set its `VITE_API_URL` to the bare Render backend URL. Use the [production migration workflow](#production-database-migrations) for a release that changes the schema.
 
 Use the same PostgreSQL and Redis URLs for the web service, receipt dispatcher, and receipt worker. Check `/ready` for PostgreSQL and Redis connectivity. A pending invoice becomes available after `npm run dispatcher:orders` queues it and `npm run worker:orders` processes it. The Vercel project uses `client/` as its root so the `/api` rewrite also keeps Google's OAuth cookie on the client origin.
 
@@ -89,10 +91,18 @@ The image runs these commands from `/app/server` and serves the frontend, API, `
 
 ### Deploy the API and receipt processes on Render
 
-The repository Blueprint uses the native Node runtime and defines the API (`invenkai-backend`), outbox dispatcher (`invenkai-order-dispatcher`), and receipt worker (`invenkai-receipt-worker`). On an existing deployment, check the Blueprint's API service name against the live service name before syncing so the workers inherit `DATABASE_URL` and `REDIS_URL` from the right service. Keep all three in the same Render region when using a private Redis endpoint. Render background workers require paid compute. Review the plan and run migrations before syncing the release.
+The Blueprint points at the existing `InvenKai` API and pins the API, `invenkai-order-dispatcher`, and `invenkai-receipt-worker` to Oregon, the region used by the live API and `invenkai-redis`. The workers inherit the API's `DATABASE_URL` and `REDIS_URL`. Review the Blueprint sync preview for reuse of the existing API before approving it. Background workers require paid compute and still need to be provisioned.
 
 Render uses `/health` for routing. It checks PostgreSQL, so the API can still serve database-backed requests during a Redis outage. `/ready` checks both dependencies and returns 503 when either is unavailable. Neither endpoint checks receipt throughput. To verify receipt processing after launch, check dispatcher and worker logs and confirm a test order progresses from outbox dispatch to an issued receipt.
 
 The [database guide](docs/database.md) covers the current schema and inventory boundaries.
 
 The production frontend is the [inven-kai Vercel project](https://inven-kai.vercel.app/). Its Root Directory is `client`. Set `VITE_API_URL` to the public backend origin and deploy from `main`.
+
+### Production database migrations
+
+The deployed free Render API has no pre-deploy command. Use the manually triggered [Production database migrations workflow](.github/workflows/production-migrations.yml) on `main` to apply migrations once per release. It serializes migration runs, and no server or worker startup command runs migrations.
+
+1. In GitHub's `production` environment, configure `PRODUCTION_MIGRATION_DATABASE_URL` as a secret containing a **direct, unpooled** connection to the production database. For a pending timestamp migration on legacy orders, set `HISTORICAL_ORDER_TIMEZONE` to the independently verified historical timezone. See the [onboarding guide](DEVELOPER_ONBOARDING.md#d-apply-database-migrations).
+2. For a schema-changing release, pause Render auto-deploy before merging so the application cannot go live before the migration. Review the pending SQL in **preview** mode on the intended release revision.
+3. Run **apply** with the full commit SHA printed by the preview. After a successful apply, deploy that revision on Render, check `/ready`, and restore the prior auto-deploy setting.

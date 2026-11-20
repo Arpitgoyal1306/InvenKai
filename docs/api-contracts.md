@@ -1068,6 +1068,7 @@ Marketplace collections accept `limit` (default 20, maximum 100) and `offset` (d
 | `/api/market/stores/:slug/cart-products` | `ids`, up to 50 comma-separated product IDs. Returns current prices and availability for the active products at that store. |
 | `/api/market/owner/products` | `q`, `category`, `stock=low`, and `visibility=public` to exclude archived products in previews. Categories cover the complete catalog for the chosen visibility. |
 | `/api/market/owner/orders` | `q` (order number), `status`, and `date` (YYYY-MM-DD). Optional `utcOffset` and `endOffset` specify minutes west of UTC at the day's start and end. |
+| `/api/market/owner/history` | Returns the authenticated seller's stock movements in `history`, newest first, including movements for archived products. |
 | `/api/market/purchases` | Returns the authenticated buyer's order page. |
 | `/api/market/owner/summary` | Returns full-store metrics and up to 20 recent low-stock alerts. The owner products page with `stock=low` lists the complete set. |
 

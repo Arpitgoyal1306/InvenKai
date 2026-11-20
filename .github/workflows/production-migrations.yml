@@ -1,0 +1,77 @@
+name: Production database migrations
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Preview pending SQL or apply pending migrations
+        type: choice
+        options:
+          - preview
+          - apply
+        default: preview
+        required: true
+      release_sha:
+        description: Full commit SHA from the preview run (required for apply)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-database-migrations
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - name: Run migrations on the production database
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          MIGRATION_MODE: ${{ inputs.mode }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          HISTORICAL_ORDER_TIMEZONE: ${{ vars.HISTORICAL_ORDER_TIMEZONE }}
+        run: |
+          if [[ -z "$DATABASE_URL" ]]; then
+            echo "::error::Set PRODUCTION_MIGRATION_DATABASE_URL in the production GitHub environment."
+            exit 1
+          fi
+          export PGOPTIONS="-c lock_timeout=5s -c statement_timeout=5min"
+          if [[ -n "$HISTORICAL_ORDER_TIMEZONE" ]]; then
+            if [[ ! "$HISTORICAL_ORDER_TIMEZONE" =~ ^[A-Za-z0-9_+./-]+$ ]]; then
+              echo "::error::Use a verified IANA timezone without spaces."
+              exit 1
+            fi
+            PGOPTIONS+=" -c invenkai.order_timezone=$HISTORICAL_ORDER_TIMEZONE"
+          fi
+          case "$MIGRATION_MODE" in
+            preview)
+              echo "Previewing migrations for $GITHUB_SHA"
+              npm run migrate -- up --dry-run
+              ;;
+            apply)
+              if [[ -z "$RELEASE_SHA" || "$RELEASE_SHA" != "$GITHUB_SHA" ]]; then
+                echo "::error::The previewed SHA must match the workflow revision. Preview again if main moved."
+                exit 1
+              fi
+              npm run migrate -- up
+              ;;
+            *) exit 1 ;;
+          esac

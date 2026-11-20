@@ -456,17 +456,17 @@ router.post("/owner/products/:id/stock", async (req, res) => {
   });
   res.sendStatus(204);
 });
-router.get("/owner/history", async (req, res) =>
-  res.json({
-    history: (
-      await db.query(
-        `SELECT t.id,t.created_at,p.name,t.transaction_type,t.quantity,t.quantity_after
-  FROM inventory_transactions t JOIN products p ON p.id=t.product_id WHERE p.store_id=$1 ORDER BY t.id DESC LIMIT 100`,
-        [req.store.id],
-      )
-    ).rows,
-  }),
-);
+router.get("/owner/history", async (req, res) => {
+  const { rows: history, pagination: paging } = await pageRows(
+    db,
+    `SELECT t.id,t.created_at,p.name,t.transaction_type,t.quantity,t.quantity_after
+      FROM inventory_transactions t JOIN products p ON p.id=t.product_id
+      WHERE p.store_id=$1 ORDER BY t.id DESC`,
+    [req.store.id],
+    pagination(req.query),
+  );
+  res.json({ history, pagination: paging });
+});
 router.get("/owner/summary", async (req, res) => {
   const [inventory, orderStats, alerts] = await Promise.all([
     db.query(
