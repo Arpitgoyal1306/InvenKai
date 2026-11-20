@@ -18,6 +18,7 @@ import {
   useAction,
   useMarket,
 } from "./Market";
+import { defaultLowStock, isLowStock } from "./stockAlerts";
 const root = "/market/owner";
 const storeUrl = (s) => window.location.origin + "/s/" + s.slug;
 function Upload({ label, value, onChange }) {
@@ -421,6 +422,7 @@ function ProductForm({ product, close }) {
               min="0"
               defaultValue={product?.low_stock_threshold ?? ""}
             />
+            <small>Defaults to {defaultLowStock} units when blank.</small>
           </label>
           <Upload label="Product photo" value={photo} onChange={P} />
           <button className="primary">Save product</button>
@@ -464,13 +466,24 @@ function Products() {
     [search, S] = useState(""),
     [cat, C] = useState(""),
     { act, busy, message } = useAction(),
-    shown = all.filter((p) => matches(p, search, cat));
+    lowOnly = params.get("stock") === "low",
+    shown = all.filter(
+      (p) => matches(p, search, cat) && (!lowOnly || isLowStock(p)),
+    );
   return (
     <>
       <div className="market-title">
         <h1>Products</h1>
         <button className="primary" onClick={() => F({})}>
           Add product
+        </button>
+      </div>
+      <div className="market-actions">
+        <button
+          aria-pressed={lowOnly}
+          onClick={() => setParams(lowOnly ? {} : { stock: "low" })}
+        >
+          {lowOnly ? "Show all products" : "Show low stock"}
         </button>
       </div>
       <Filters
@@ -493,6 +506,11 @@ function Products() {
                   {p.category} · {amount(p.price)} · {p.quantity} in stock{" "}
                   {p.archived ? "· Archived" : ""}
                 </small>
+                {isLowStock(p) && (
+                  <span className="stock-warning">
+                    {p.quantity ? "Low stock" : "Out of stock"}
+                  </span>
+                )}
               </div>
               <button onClick={() => F(p)}>Edit</button>
               <button onClick={() => J(p)}>Adjust stock</button>
@@ -644,10 +662,7 @@ function Overview({ store }) {
   const products = useMarket(root + "/products"),
     orders = useMarket(root + "/orders"),
     active = (products.data?.products || []).filter((p) => !p.archived),
-    low = active.filter(
-      (p) =>
-        p.low_stock_threshold != null && p.quantity <= p.low_stock_threshold,
-    ),
+    low = active.filter(isLowStock),
     incoming = orders.data?.orders || [],
     sales = incoming
       .filter(
@@ -725,7 +740,7 @@ function Overview({ store }) {
                 <div className="market-row" key={p.id}>
                   <b>{p.name}</b>
                   <span>{p.quantity} remaining</span>
-                  <Link to="/owner/products">Manage stock</Link>
+                  <Link to="/owner/products?stock=low">Manage stock</Link>
                 </div>
               ))}
             </section>

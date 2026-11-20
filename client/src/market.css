@@ -1361,3 +1361,113 @@
     padding-inline: 16px !important;
   }
 }
+
+.market {
+  background: #f4f6f1;
+  color: #102c25;
+}
+.market .market-head {
+  background: #153d32;
+  color: #fff9ed;
+  border-color: #2d574b;
+}
+.market .market-head nav a {
+  color: #e1eee7;
+}
+.market .market-head nav a.active,
+.market .market-head nav a:hover {
+  background: #315e50;
+  color: #fff;
+}
+.market .header-cart,
+.market .account summary {
+  background: #245043;
+  color: #fff;
+  border-color: #658577;
+}
+.market .header-cart:hover,
+.market .account summary:hover {
+  background: #356452;
+}
+.market .header-cart span,
+.stock-alert-count {
+  background: #ffd09a;
+  color: #352215;
+}
+.market .account > div {
+  color: #102c25;
+}
+.cart-panel {
+  color: #102c25;
+  height: auto;
+}
+.cart-panel .cart-subtotal {
+  color: #102c25;
+}
+.cart-page .cart-panel {
+  align-content: start;
+  row-gap: 16px;
+}
+.cart-page .cart-panel h2 {
+  margin: 0;
+}
+.store-shopping .cart-panel {
+  align-self: start;
+}
+.market .market-main {
+  padding-top: clamp(22px, 3vw, 42px);
+}
+.stock-alert-count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  border-radius: 20px;
+  min-width: 18px;
+  padding: 1px 4px;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+.stock-alerts ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 45vh;
+  overflow: auto;
+}
+.stock-alerts li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--edge);
+}
+.stock-warning {
+  display: inline-block;
+  padding: 3px 8px;
+  margin-top: 5px;
+  border-radius: 6px;
+  color: #682e0b;
+  background: #fff0d7;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.stock-toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  max-width: min(410px, calc(100vw - 36px));
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid #d89f5c;
+  background: #fff4df;
+  color: #49280b;
+  box-shadow: 0 6px 20px #24231924;
+  display: flex;
+  align-items: start;
+  gap: 14px;
+}
+.stock-toast button {
+  flex: none;
+}
+
+.market .stock-alerts summary .stock-alert-count {
+  display: block;
+}

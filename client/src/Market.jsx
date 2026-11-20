@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Link,
   NavLink,
@@ -13,6 +13,8 @@ import {
 } from "@tanstack/react-query";
 import {
   Store,
+  Bell,
+  X,
   Package,
   UserRound,
   ArrowUpRight,
@@ -33,6 +35,7 @@ import { api, amount, dateTime, useData } from "./api";
 import { Brand, State, Modal, Table } from "./ui";
 import { useMarketLive } from "./useMarketLive";
 import { addressFields } from "./Account";
+import { isLowStock } from "./stockAlerts";
 import { Receipt } from "./Operations";
 
 export function useMarket(path, keepResults = false) {
@@ -88,6 +91,84 @@ function AccountAvatar({ url }) {
   );
 }
 
+function StockAlerts() {
+  const query = useMarket("/market/owner/products");
+  const [notice, setNotice] = useState([]);
+  const previous = useRef(null);
+  const products = query.data?.products;
+  const alerts = (products || []).filter(isLowStock);
+
+  useEffect(() => {
+    if (!products) return;
+    const low = products.filter(isLowStock);
+    const current = new Set(low.map((product) => product.id));
+    const added = previous.current
+      ? low.filter((product) => !previous.current.has(product.id))
+      : [];
+    previous.current = current;
+    setNotice((existing) => [
+      ...existing.filter((product) => current.has(product.id)),
+      ...added,
+    ]);
+  }, [products]);
+
+  return (
+    <>
+      <details className="account stock-alerts">
+        <summary
+          aria-label={`Stock alerts, ${alerts.length} ${alerts.length === 1 ? "product" : "products"}`}
+        >
+          <Bell size={19} />
+          {!!alerts.length && (
+            <span className="stock-alert-count">{alerts.length}</span>
+          )}
+        </summary>
+        <div>
+          <strong>Stock alerts</strong>
+          {alerts.length ? (
+            <ul>
+              {alerts.map((p) => (
+                <li key={p.id}>
+                  <strong>{p.name}</strong>
+                  <small>
+                    {p.quantity
+                      ? `${p.quantity} left in stock`
+                      : "Out of stock"}
+                  </small>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <small>
+              {query.isPending ? "Checking stock…" : "No low-stock products."}
+            </small>
+          )}
+          {!!alerts.length && (
+            <Link to="/owner/products?stock=low">Review stock</Link>
+          )}
+        </div>
+      </details>
+      {!!notice.length && (
+        <div className="stock-toast">
+          <p role="status">
+            <strong>Stock alert</strong>
+            <br />
+            {notice.map((p) => p.name).join(", ")}{" "}
+            {notice.length === 1 ? "needs" : "need"} restocking.
+          </p>
+          <button
+            type="button"
+            onClick={() => setNotice([])}
+            aria-label="Dismiss stock alert"
+          >
+            <X size={17} />
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function MarketShell({ user, logout, children }) {
   const loc = useLocation(),
     nav = useNavigate(),
@@ -132,6 +213,7 @@ export function MarketShell({ user, logout, children }) {
           ))}
         </nav>
         <div className="market-head-actions">
+          {owner && user && <StockAlerts key={user.id} />}
           {!owner && (
             <Link
               className="header-cart"
