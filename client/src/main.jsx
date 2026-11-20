@@ -26,7 +26,9 @@ import {
   LogOut,
   Mail,
   Package,
+  ShoppingBag,
   ShoppingBasket,
+  Store,
   Truck,
   UserRound,
   LockKeyhole,
@@ -105,7 +107,9 @@ function Auth({ register, login, landing }) {
               <h2>Welcome to InvenKai</h2>
               <p className="intro">Choose how you’d like to get started.</p>
               <Link className="entry-choice" to="/explore">
-                <img src="/images/sample-shops/bakery.jpg" alt="" />
+                <span className="entry-icon entry-icon-buyer" aria-hidden="true">
+                  <ShoppingBag size={29} strokeWidth={1.75} />
+                </span>
                 <span>
                   <strong>Shop as a buyer</strong>
                   <small>
@@ -115,7 +119,9 @@ function Auth({ register, login, landing }) {
                 <b>→</b>
               </Link>
               <Link className="entry-choice" to="/owner">
-                <img src="/images/sample-shops/roaster.jpg" alt="" />
+                <span className="entry-icon entry-icon-owner" aria-hidden="true">
+                  <Store size={29} strokeWidth={1.75} />
+                </span>
                 <span>
                   <strong>Manage my store</strong>
                   <small>

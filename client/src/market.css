@@ -440,12 +440,19 @@
     height: 200px;
   }
 }
-.entry-choice img {
+.entry-choice .entry-icon {
+  display: grid;
+  place-items: center;
   width: 62px;
   height: 66px;
-  object-fit: cover;
   border-radius: 8px;
   flex: none;
+}
+.entry-icon-buyer {
+  background: #f5e7db;
+}
+.entry-icon-owner {
+  background: #e7efe3;
 }
 .entry-choice {
   box-shadow: 0 3px 12px #203a3007;
