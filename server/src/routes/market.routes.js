@@ -441,7 +441,7 @@ router.post("/owner/products/:id/stock", async (req, res) => {
   const delta =
     integer(Math.abs(req.body?.delta), 1) * Math.sign(req.body.delta);
   if (typeof req.body.delta !== "number") fail("Invalid adjustment.");
-  await transaction(async (c) => {
+  const quantity = await transaction(async (c) => {
     const r = await c.query(
       "SELECT i.quantity FROM inventory i JOIN products p ON p.id=i.product_id WHERE p.id=$1 AND p.store_id=$2 AND p.deleted_at IS NULL FOR UPDATE OF p,i",
       [req.params.id, req.store.id],
@@ -452,11 +452,12 @@ router.post("/owner/products/:id/stock", async (req, res) => {
     if (after < 0 || after > 2147483647)
       fail("Adjustment exceeds available stock or capacity.", 409);
     await c.query(
-      "UPDATE inventory SET quantity=$2,updated_at=NOW() WHERE product_id=$1",
-      [req.params.id, after],
-    );
-    await c.query(
-      "INSERT INTO inventory_transactions(product_id,performed_by,transaction_type,quantity,quantity_before,quantity_after) VALUES ($1,$2,$3,$4,$5,$6)",
+      `WITH updated AS (
+        UPDATE inventory SET quantity=$6,updated_at=NOW() WHERE product_id=$1
+        RETURNING product_id,quantity
+      )
+      INSERT INTO inventory_transactions(product_id,performed_by,transaction_type,quantity,quantity_before,quantity_after)
+      SELECT product_id,$2,$3,$4,$5,quantity FROM updated`,
       [
         req.params.id,
         req.user.id,
@@ -466,8 +467,9 @@ router.post("/owner/products/:id/stock", async (req, res) => {
         after,
       ],
     );
+    return after;
   });
-  res.sendStatus(204);
+  res.json({ quantity });
 });
 router.get("/owner/history", async (req, res) => {
   const { rows: history, pagination: paging } = await pageRows(

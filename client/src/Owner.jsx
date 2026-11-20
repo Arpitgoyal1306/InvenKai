@@ -504,15 +504,15 @@ function History() {
     </>
   );
 }
-function AdjustStock({ product, close, saved }) {
+function AdjustStock({ product, close, apply }) {
   const [direction, setDirection] = useState(1);
   const [quantity, setQuantity] = useState("");
-  const { act, busy, message, setMessage } = useAction(true);
+  const [message, setMessage] = useState("");
   const delta = direction * Number(quantity);
   const updated = product.quantity + delta;
   const limit =
     direction === 1 ? 2147483647 - product.quantity : product.quantity;
-  async function submit(event) {
+  function submit(event) {
     event.preventDefault();
     if (
       !Number.isInteger(delta) ||
@@ -525,26 +525,13 @@ function AdjustStock({ product, close, saved }) {
       );
       return;
     }
-    if (
-      await act(() =>
-        api(root + "/products/" + product.id + "/stock", {
-          method: "POST",
-          body: { delta },
-        }),
-      )
-    )
-      saved();
+    apply(delta);
   }
   return (
-    <Modal
-      title="Adjust stock"
-      className="owner-catalog-dialog"
-      close={close}
-      busy={busy}
-    >
+    <Modal title="Adjust stock" className="owner-catalog-dialog" close={close}>
       <p className="owner-dialog-product">{product.name}</p>
       <form className="market-form" onSubmit={submit}>
-        <fieldset disabled={busy}>
+        <fieldset>
           <div
             className="stock-direction"
             aria-label="Adjustment type"
@@ -609,7 +596,7 @@ function AdjustStock({ product, close, saved }) {
               Cancel
             </button>
             <button className="primary" disabled={limit === 0}>
-              {busy ? "Updating stock…" : "Apply adjustment"}
+              Apply adjustment
             </button>
           </div>
         </fieldset>
@@ -665,17 +652,20 @@ function DeleteProduct({ product, close, deleted }) {
   );
 }
 
-function Products() {
+function Products({ lowStockPage = false }) {
+  const client = useQueryClient();
   const [params, setParams] = useSearchParams(),
     [form, F] = useState(params.has("new") ? {} : null),
     [adjust, J] = useState(null),
     [remove, setRemove] = useState(null),
     [history, H] = useState(false),
     [notice, N] = useState(""),
+    [pendingStock, setPendingStock] = useState(null),
     [search, S] = useState(""),
     [cat, C] = useState(""),
     { act, busy, message } = useAction(true),
-    lowOnly = params.get("stock") === "low";
+    stockAction = useAction(true),
+    lowOnly = lowStockPage || params.get("stock") === "low";
   const listing = useMarketPage(root + "/products", {
     q: search.trim(),
     category: cat,
@@ -683,22 +673,58 @@ function Products() {
   });
   const q = listing.query;
   const shown = q.data?.products || [];
+  async function saveStock(product, delta) {
+    if (pendingStock) return;
+    J(null);
+    N("");
+    setPendingStock(product);
+    const saved = await stockAction.act(async () => {
+      const { quantity } = await api(
+        root + "/products/" + product.id + "/stock",
+        {
+          method: "POST",
+          body: { delta },
+        },
+      );
+      if (Number.isInteger(quantity)) {
+        updateOwnerCatalog(client, (products) =>
+          products.map((row) =>
+            row.id === product.id ? { ...row, quantity } : row,
+          ),
+        );
+      }
+    });
+    setPendingStock(null);
+    if (saved) N("Stock updated.");
+  }
   return (
     <>
       <div className="market-title">
-        <h1>Products</h1>
-        <button className="primary" onClick={() => F({})}>
-          Add product
-        </button>
+        <h1>{lowStockPage ? "Low stock" : "Products"}</h1>
+        {lowStockPage ? (
+          <Link to="/owner/products">All products</Link>
+        ) : (
+          <button className="primary" onClick={() => F({})}>
+            Add product
+          </button>
+        )}
       </div>
-      <div className="market-actions">
-        <button
-          aria-pressed={lowOnly}
-          onClick={() => setParams(lowOnly ? {} : { stock: "low" })}
-        >
-          {lowOnly ? "Show all products" : "Show low stock"}
-        </button>
-      </div>
+      {lowStockPage && (
+        <p>
+          Products at or below their restock threshold. The default is{" "}
+          {defaultLowStock} units.
+        </p>
+      )}
+      {!lowStockPage && (
+        <div className="market-actions">
+          <button
+            aria-pressed={lowOnly}
+            onClick={() => setParams(lowOnly ? {} : { stock: "low" })}
+          >
+            {lowOnly ? "Show all products" : "Show low stock"}
+          </button>
+        </div>
+      )}
       <Filters
         categories={q.data?.categories || []}
         search={search}
@@ -708,7 +734,21 @@ function Products() {
         label="Search products"
       />
       <p role="status">{notice || message}</p>
-      <State query={q} empty={!shown.length} message="No products found.">
+      {pendingStock && (
+        <p role="status">Updating stock for {pendingStock.name}…</p>
+      )}
+      {stockAction.message && (
+        <p className="owner-form-error" role="alert">
+          {stockAction.message}
+        </p>
+      )}
+      <State
+        query={q}
+        empty={!shown.length}
+        message={
+          lowOnly ? "No matching low-stock products." : "No products found."
+        }
+      >
         <div className="market-panel">
           {shown.map((p) => (
             <div className="market-row owner-product-row" key={p.id}>
@@ -719,6 +759,12 @@ function Products() {
                   {p.category} · {amount(p.price)} · {p.quantity} in stock{" "}
                   {p.archived ? "· Archived" : ""}
                 </small>
+                {lowStockPage && (
+                  <small>
+                    Restock threshold:{" "}
+                    {p.low_stock_threshold ?? defaultLowStock}
+                  </small>
+                )}
                 {isLowStock(p) && (
                   <span className="stock-warning">
                     {p.quantity ? "Low stock" : "Out of stock"}
@@ -727,7 +773,9 @@ function Products() {
               </div>
               <div className="owner-product-actions">
                 <button onClick={() => F(p)}>Edit</button>
-                <button onClick={() => J(p)}>Adjust stock</button>
+                <button disabled={Boolean(pendingStock)} onClick={() => J(p)}>
+                  Adjust stock
+                </button>
                 <button
                   disabled={busy}
                   onClick={() => {
@@ -782,10 +830,7 @@ function Products() {
         <AdjustStock
           product={adjust}
           close={() => J(null)}
-          saved={() => {
-            J(null);
-            N("Stock updated.");
-          }}
+          apply={(delta) => saveStock(adjust, delta)}
         />
       )}
       {remove && (
@@ -944,7 +989,7 @@ function Overview({ store }) {
               <div className="market-row" key={p.id}>
                 <b>{p.name}</b>
                 <span>{p.quantity} remaining</span>
-                <Link to="/owner/products?stock=low">Manage stock</Link>
+                <Link to="/owner/low-stock">Manage stock</Link>
               </div>
             ))}
           </section>
@@ -988,7 +1033,11 @@ export function Owner() {
       {s ? (
         <Routes>
           <Route index element={<Overview store={s} />} />
-          <Route path="products" element={<Products />} />
+          <Route path="products" element={<Products key="products" />} />
+          <Route
+            path="low-stock"
+            element={<Products key="low-stock" lowStockPage />}
+          />
           <Route path="orders" element={<Incoming />} />
           <Route path="settings" element={<Settings key={s.id} store={s} />} />
           <Route path="preview" element={<Preview store={s} />} />

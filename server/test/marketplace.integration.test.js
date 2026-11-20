@@ -343,12 +343,13 @@ test("store publication, private inventory and fulfillment stay scoped to their 
     await t.test(
       "warehouse stock, suppliers and reports stay separate from seller inventory",
       async () => {
-        await call(
+        const adjustment = await call(
           "post",
           "/market/owner/products/" + secondProduct + "/stock",
           b,
           { delta: 4 },
-        ).expect(204);
+        ).expect(200);
+        assert.deepEqual(adjustment.body, { quantity: 4 });
         const staffId = (
           await query(
             "INSERT INTO users(name,email,password_hash,role) VALUES('Warehouse Staff',$1,'test','inventory_manager') RETURNING id",
@@ -494,7 +495,6 @@ test("store publication, private inventory and fulfillment stay scoped to their 
       (await call("get", receiptPath, buyer).expect(200)).body,
       issued.body,
     );
-
     const productPath = "/market/owner/products/" + id;
     const editedProduct = {
       name: "Updated cup",
@@ -538,6 +538,43 @@ test("store publication, private inventory and fulfillment stay scoped to their 
       (await call("get", receiptPath, buyer).expect(200)).body,
       issued.body,
     );
+
+    await t.test(
+      "low-stock page uses each seller product's threshold",
+      async () => {
+        const fixtures = [
+          { name: "At threshold", quantity: 7, low_stock_threshold: 7 },
+          { name: "Above threshold", quantity: 7, low_stock_threshold: 6 },
+          { name: "Zero threshold", quantity: 1, low_stock_threshold: 0 },
+          { name: "Default threshold", quantity: 3 },
+        ];
+        for (const fields of fixtures) {
+          await call("post", "/market/owner/products", a, {
+            description: "",
+            category: key,
+            price: 5,
+            ...fields,
+          }).expect(201);
+        }
+        const low = await call(
+          "get",
+          "/market/owner/products?stock=low",
+          a,
+        ).expect(200);
+        assert.deepEqual(
+          low.body.products.map((p) => [
+            p.name,
+            p.quantity,
+            p.low_stock_threshold,
+          ]),
+          [
+            ["Default threshold", 3, null],
+            ["At threshold", 7, 7],
+          ],
+        );
+      },
+    );
+
   } finally {
     await client.query("ROLLBACK");
     client.release();

@@ -1077,6 +1077,8 @@ Marketplace collections accept `limit` (default 20, maximum 100) and `offset` (d
 
 Store owners can delete a product with `DELETE /api/market/owner/products/:id`. Deleted items disappear from owner and public catalogs and cannot be restored through the archive controls. Existing orders, receipts, and inventory history are preserved.
 
+`POST /api/market/owner/products/:id/stock` accepts a nonzero integer `delta` and returns the committed stock as `{quantity}`.
+
 | Method and path | Access | Behavior |
 |---|---|---|
 | POST `/api/orders` | Customer or admin | Place a platform order with `items`. Each item has `productId` and `quantity`. |

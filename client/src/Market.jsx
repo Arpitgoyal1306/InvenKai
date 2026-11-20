@@ -196,9 +196,7 @@ function StockAlerts() {
               {query.isPending ? "Checking stock…" : "No low-stock products."}
             </small>
           )}
-          {!!alerts.length && (
-            <Link to="/owner/products?stock=low">Review stock</Link>
-          )}
+          {!!alerts.length && <Link to="/owner/low-stock">Review stock</Link>}
         </div>
       </details>
       {!!notice.length && (
@@ -244,6 +242,7 @@ export function MarketShell({ user, logout, children }) {
     ? [
         ["/owner", "Overview"],
         ["/owner/products", "Products"],
+        ["/owner/low-stock", "Low stock"],
         ["/owner/orders", "Orders"],
         ["/owner/settings", "Store settings"],
       ]
@@ -602,20 +601,26 @@ export function Catalog({
     </>
   );
 }
+function EmptyCart() {
+  return (
+    <>
+      <h1>Your cart</h1>
+      <div className="market-panel empty-cart">
+        <ShoppingBag size={30} />
+        <h2>Your cart is empty</h2>
+        <Link to="/explore">Explore stores</Link>
+      </div>
+    </>
+  );
+}
+
 export function CartPage({ user }) {
   const cart = loadCart();
-  if (!cart.items.length)
-    return (
-      <>
-        <h1>Your cart</h1>
-        <div className="market-panel empty-cart">
-          <ShoppingBag size={30} />
-          <h2>Your cart is empty</h2>
-          <Link to="/explore">Explore stores</Link>
-        </div>
-      </>
-    );
-  return <Storefront user={user} cartSlug={cart.slug} />;
+  return cart.items.length ? (
+    <Storefront user={user} cartSlug={cart.slug} />
+  ) : (
+    <EmptyCart />
+  );
 }
 export function Storefront({ user, cartSlug }) {
   const { slug: routeSlug } = useParams();
@@ -649,7 +654,8 @@ export function Storefront({ user, cartSlug }) {
   const quoteUnavailable = !!ids && (cartQuote.isPending || cartQuote.isError);
   function save(items) {
     const next = { slug, name: q.data.store.name, items };
-    sessionStorage.setItem(cartKey, JSON.stringify(next));
+    if (items.length) sessionStorage.setItem(cartKey, JSON.stringify(next));
+    else sessionStorage.removeItem(cartKey);
     setCart(next);
     window.dispatchEvent(new Event("market-cart"));
   }
@@ -737,6 +743,7 @@ export function Storefront({ user, cartSlug }) {
     if (user) setCheckoutOpen(true);
     else nav("/login?next=" + encodeURIComponent("/cart"));
   }
+  if (cartSlug && !own.length) return <EmptyCart />;
   const cartPanel = q.data && (
     <aside id="cart" className="market-panel cart-panel" aria-label="Your cart">
       <h2>{cartSlug ? "Order items" : "Your cart"}</h2>
@@ -794,15 +801,20 @@ export function Storefront({ user, cartSlug }) {
                   <div className="cart-controls">
                     <button
                       type="button"
-                      aria-label={"Decrease quantity for " + i.name}
-                      disabled={i.quantity === 1}
+                      aria-label={
+                        (i.quantity === 1
+                          ? "Remove last unit of "
+                          : "Decrease quantity for ") + i.name
+                      }
                       onClick={() =>
                         save(
-                          own.map((item) =>
-                            item.id === i.id
-                              ? { ...item, quantity: item.quantity - 1 }
-                              : item,
-                          ),
+                          i.quantity === 1
+                            ? own.filter((item) => item.id !== i.id)
+                            : own.map((item) =>
+                                item.id === i.id
+                                  ? { ...item, quantity: item.quantity - 1 }
+                                  : item,
+                              ),
                         )
                       }
                     >
