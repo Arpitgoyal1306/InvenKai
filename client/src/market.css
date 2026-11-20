@@ -1374,17 +1374,102 @@
   color: #102c25;
 }
 .market .market-head {
-  background: #153d32;
+  background:
+    repeating-linear-gradient(132deg, #f3e3c30b 0 1px, transparent 1px 10px),
+    radial-gradient(ellipse at 86% -80%, #426c57, transparent 75%),
+    linear-gradient(108deg, #153d32, #102f28 60%, #234a3e);
   color: #fff9ed;
-  border-color: #2d574b;
+  border-color: #557160;
+  box-shadow: 0 3px 14px #16382e33;
+}
+.market-head nav {
+  padding: 3px;
+  border: 1px solid #d5e9d521;
+  border-radius: 11px;
+  background: #0a251d68;
+}
+.market-head nav a {
+  position: relative;
 }
 .market .market-head nav a {
   color: #e1eee7;
 }
 .market .market-head nav a.active,
 .market .market-head nav a:hover {
-  background: #315e50;
+  background: #315b4e;
   color: #fff;
+}
+.market-head nav a.active::after {
+  content: "";
+  position: absolute;
+  inset: auto 14px 1px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, #f2b585, transparent);
+}
+.market-head-search {
+  display: flex;
+  align-items: center;
+  width: clamp(145px, 15vw, 235px);
+  border: 1px solid #8db3a172;
+  border-radius: 22px;
+  background: #0d2b23aa;
+}
+.market-head-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 9px 4px 9px 14px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #fff9ed;
+  font: inherit;
+  color-scheme: dark;
+}
+.market-head-search input::placeholder {
+  color: #cee3d8;
+}
+.market-head-search button,
+.market-head-search-link {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  min-height: 38px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #ffcda5;
+  text-decoration: none;
+}
+.market-head-search button:hover,
+.market-head-search-link:hover {
+  background: #ffffff19;
+}
+.market-head-search:focus-within,
+.market-head-search-link:focus-visible {
+  outline: 2px solid #ffbf90;
+  outline-offset: 2px;
+}
+.market-head .market-head-search-link {
+  display: none;
+}
+#store-search {
+  scroll-margin-top: 135px;
+}
+@media (max-width: 950px) {
+  .market-head-search {
+    display: none;
+  }
+  .market-head .market-head-search-link {
+    display: grid;
+    width: 44px;
+    min-height: 44px;
+    border: 1px solid #658577;
+    color: #fff9ed;
+    background: #245043;
+  }
 }
 .market .header-cart,
 .market .account summary {

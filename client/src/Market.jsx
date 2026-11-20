@@ -11,6 +11,7 @@ import {
   useParams,
   useLocation,
   useNavigate,
+  useSearchParams,
 } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -250,6 +251,15 @@ export function MarketShell({ user, logout, children }) {
         ["/explore", "Explore stores", Compass],
         ["/buyer/orders", "My orders", ReceiptText],
       ];
+  function findStores(event) {
+    event.preventDefault();
+    const term = String(
+      new FormData(event.currentTarget).get("q") || "",
+    ).trim();
+    const query = term ? "?" + new URLSearchParams({ q: term }) : "";
+    event.currentTarget.reset();
+    nav("/explore" + query + "#store-search");
+  }
   return (
     <MarketLive.Provider value={live}>
       <div className={owner ? "market market-owner" : "market"}>
@@ -267,6 +277,38 @@ export function MarketShell({ user, logout, children }) {
           </nav>
           <div className="market-head-actions">
             {owner && user && <StockAlerts key={user.id} />}
+            {!owner && (
+              <>
+                <form
+                  className="market-head-search"
+                  role="search"
+                  aria-label="Marketplace"
+                  onSubmit={findStores}
+                >
+                  <input
+                    type="search"
+                    name="q"
+                    aria-label="Find stores"
+                    placeholder="Find stores"
+                    maxLength={120}
+                  />
+                  <button type="submit" aria-label="Submit store search">
+                    <Search size={18} aria-hidden="true" />
+                  </button>
+                </form>
+                <Link
+                  className="market-head-search-link"
+                  to={{
+                    pathname: "/explore",
+                    search: loc.pathname === "/explore" ? loc.search : "",
+                    hash: "#store-search",
+                  }}
+                  aria-label="Find stores"
+                >
+                  <Search size={19} aria-hidden="true" />
+                </Link>
+              </>
+            )}
             {!owner && (
               <Link
                 className="header-cart"
@@ -356,6 +398,8 @@ export function Filters({
   category,
   setCategory,
   label,
+  searchId,
+  onReset,
 }) {
   return (
     <div className="market-filters">
@@ -363,6 +407,7 @@ export function Filters({
         <Search size={18} aria-hidden="true" />
         <input
           type="search"
+          id={searchId}
           maxLength={label === "Search stores" ? 120 : undefined}
           aria-label={label}
           placeholder={label}
@@ -385,10 +430,13 @@ export function Filters({
       </div>
       {(search || category) && (
         <button
-          onClick={() => {
-            setSearch("");
-            setCategory("");
-          }}
+          onClick={
+            onReset ||
+            (() => {
+              setSearch("");
+              setCategory("");
+            })
+          }
         >
           Reset filters
         </button>
@@ -397,13 +445,25 @@ export function Filters({
   );
 }
 export function Explore() {
-  const [search, S] = useState("");
-  const [cat, C] = useState("");
-  const [term, setTerm] = useState("");
+  const [params, setParams] = useSearchParams();
+  const { hash, key } = useLocation();
+  const search = (params.get("q") || "").slice(0, 120);
+  const cat = (params.get("category") || "").slice(0, 100);
+  const [term, setTerm] = useState(search.trim());
   useEffect(() => {
     const timer = setTimeout(() => setTerm(search.trim()), 200);
     return () => clearTimeout(timer);
   }, [search]);
+  useEffect(() => {
+    if (hash === "#store-search")
+      document.getElementById("store-search")?.focus();
+  }, [hash, key]);
+  function updateFilter(name, value) {
+    const next = new URLSearchParams(params);
+    if (value) next.set(name, value);
+    else next.delete(name);
+    setParams(next, { replace: true });
+  }
   const listing = useMarketPage("/market/stores", { q: term, category: cat });
   const q = listing.query;
   const shown = q.data?.stores || [];
@@ -435,10 +495,12 @@ export function Explore() {
       <Filters
         categories={q.data?.categories || (cat ? [cat] : [])}
         search={search}
-        setSearch={S}
+        setSearch={(value) => updateFilter("q", value)}
         category={cat}
-        setCategory={C}
+        setCategory={(value) => updateFilter("category", value)}
         label="Search stores"
+        searchId="store-search"
+        onReset={() => setParams({}, { replace: true })}
       />
       <State
         query={q}
